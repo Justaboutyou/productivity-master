@@ -6,7 +6,7 @@ Notion → Slack 모닝 브리핑 에이전트 오케스트레이터
   Step 2 — 할일 블록 추출 (extract_todo_blocks.py)
   Step 3 — LLM 브리핑 생성 (Gemini)
   Step 4 — LLM 자기 검증 (Gemini)
-  Step 5 — Slack 발송 (send_slack_message.py)
+  Step 5 — Discord 발송 (send_slack_message.py)
 """
 
 from __future__ import annotations
@@ -306,7 +306,7 @@ def main():
         print(f"[Step 5] 발송 실패: {result.stderr}", file=sys.stderr)
         append_run_log(
             status="failed",
-            reason="slack_error",
+            reason="discord_error",
             todo_count=todo_count,
             retry_count=retry_count,
         )

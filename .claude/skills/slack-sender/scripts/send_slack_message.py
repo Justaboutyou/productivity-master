@@ -1,5 +1,5 @@
 """
-Step 5: output/briefing_draft.md를 읽어 Slack Webhook으로 발송한다.
+Step 5: output/briefing_draft.md를 읽어 Discord Webhook으로 발송한다.
 
 Exit codes:
   0 - 발송 성공
@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 BRIEFING_PATH = Path(__file__).parents[4] / "output" / "briefing_draft.md"
 RUN_LOG_PATH = Path(__file__).parents[4] / "output" / "run_log.json"
 
@@ -43,14 +43,15 @@ def send_message(text: str) -> bool:
     for attempt in range(MAX_RETRIES + 1):
         try:
             response = requests.post(
-                SLACK_WEBHOOK_URL,
-                json={"text": text},
+                DISCORD_WEBHOOK_URL,
+                json={"content": text},
                 timeout=10,
             )
-            if response.status_code == 200:
+            # Discord: 204 No Content = 성공
+            if response.status_code in (200, 204):
                 return True
             print(
-                f"Slack returned {response.status_code} (attempt {attempt + 1}): {response.text}",
+                f"Discord returned {response.status_code} (attempt {attempt + 1}): {response.text}",
                 file=sys.stderr,
             )
         except requests.RequestException as e:
@@ -63,8 +64,8 @@ def send_message(text: str) -> bool:
 
 
 def main():
-    if not SLACK_WEBHOOK_URL:
-        print("Missing SLACK_WEBHOOK_URL", file=sys.stderr)
+    if not DISCORD_WEBHOOK_URL:
+        print("Missing DISCORD_WEBHOOK_URL", file=sys.stderr)
         sys.exit(1)
 
     if not BRIEFING_PATH.exists():
@@ -80,7 +81,7 @@ def main():
         append_run_log({
             "timestamp": datetime.now(kst).isoformat(),
             "status": "failed",
-            "reason": "slack_error",
+            "reason": "discord_error",
         })
         sys.exit(1)
 
