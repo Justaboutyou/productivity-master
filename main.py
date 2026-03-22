@@ -41,7 +41,7 @@ BRIEFING_PATH = BASE_DIR / "output" / "briefing_draft.md"
 RUN_LOG_PATH = BASE_DIR / "output" / "run_log.json"
 
 KST = timezone(timedelta(hours=9))
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-2.0-flash"
 
 PERSONAL_KEYWORDS = ["심리상담", "병원", "운동", "자세교정", "가족", "약속"]
 WORK_KEYWORDS = ["미팅", "스탠드업", "리뷰", "발표", "보고"]
@@ -146,42 +146,6 @@ def run_step2(today: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 시간 유틸
-# ---------------------------------------------------------------------------
-
-def time_to_minutes(t: str) -> int:
-    """'HH:MM' → 분 단위 정수."""
-    h, m = t.split(":")
-    return int(h) * 60 + int(m)
-
-
-def format_gap(minutes: int) -> str:
-    """분 단위 공백 → '···  (Xh Xm 공백)' 문자열."""
-    if minutes < 60:
-        return f"···  ({minutes}m 공백)"
-    h = minutes // 60
-    m = minutes % 60
-    return f"···  ({h}h 공백)" if m == 0 else f"···  ({h}h {m}m 공백)"
-
-
-def calculate_gap_slots(events: list) -> list:
-    """이벤트 목록에서 30분 이상 공백 슬롯 목록 반환.
-    반환: [{"start": "HH:MM", "end": "HH:MM", "minutes": int}, ...]
-    """
-    if not events:
-        return []
-    sorted_evts = sorted(events, key=lambda e: e["start"])
-    gaps = []
-    for i in range(1, len(sorted_evts)):
-        prev_end = sorted_evts[i - 1]["end"]
-        curr_start = sorted_evts[i]["start"]
-        gap_min = time_to_minutes(curr_start) - time_to_minutes(prev_end)
-        if gap_min >= 30:
-            gaps.append({"start": prev_end, "end": curr_start, "minutes": gap_min})
-    return gaps
-
-
-# ---------------------------------------------------------------------------
 # Step 3 — 규칙 기반 분류 + 포맷 빌더
 # ---------------------------------------------------------------------------
 
@@ -210,18 +174,8 @@ def classify_todoist_task(task: dict) -> str:
     return "personal"  # 매핑 불명 → 개인 블록 fallback
 
 
-def render_events_with_gaps(events: list) -> list[str]:
-    """이벤트 목록을 'HH:MM - HH:MM  제목' 형식으로 렌더링. 30분 이상 공백은 ··· 줄 삽입."""
-    lines = []
-    prev_end = None
-    for event in events:
-        if prev_end is not None:
-            gap = time_to_minutes(event["start"]) - time_to_minutes(prev_end)
-            if gap >= 30:
-                lines.append(f"  {format_gap(gap)}")
-        lines.append(f"  {event['start']} - {event['end']}  {event['title']}")
-        prev_end = event["end"]
-    return lines
+def render_events(events: list) -> list[str]:
+    return [f"  {e['start']} - {e['end']}  {e['title']}" for e in events]
 
 
 def build_formatted_briefing(merged: dict, starred: list[str], comment: str) -> str:
@@ -251,17 +205,17 @@ def build_formatted_briefing(merged: dict, starred: list[str], comment: str) -> 
     if is_weekday:
         if work_events:
             lines.append("💼 일정 (업무)")
-            lines += render_events_with_gaps(work_events)
+            lines += render_events(work_events)
             lines.append("")
         if personal_events:
             lines.append("🌙 일정 (개인)")
-            lines += render_events_with_gaps(personal_events)
+            lines += render_events(personal_events)
             lines.append("")
     else:
         all_events = sorted(merged["gcal_events"], key=lambda e: e["start"])
         if all_events:
             lines.append("🌙 일정")
-            lines += render_events_with_gaps(all_events)
+            lines += render_events(all_events)
             lines.append("")
 
     # ── 2. 업무 섹션 ──
@@ -300,7 +254,7 @@ def build_formatted_briefing(merged: dict, starred: list[str], comment: str) -> 
 # ---------------------------------------------------------------------------
 
 def generate_stars_and_comment(
-    client: genai.Client, merged: dict, gap_slots: list
+    client: genai.Client, merged: dict
 ) -> tuple[list[str], str]:
     """LLM에게 ★ 태스크 목록과 한 줄 코멘트를 JSON으로 받아 반환.
 
@@ -325,23 +279,9 @@ def generate_stars_and_comment(
             for t in tasks
         )
 
-    gap_desc = (
-        ", ".join(f"{g['start']}~{g['end']} ({g['minutes']}분)" for g in gap_slots)
-        if gap_slots else "없음"
-    )
-    longest = max(gap_slots, key=lambda g: g["minutes"]) if gap_slots else None
-    longest_desc = (
-        f"{longest['start']}~{longest['end']} ({longest['minutes']}분)"
-        if longest else "없음"
-    )
-    total_gap_min = sum(g["minutes"] for g in gap_slots)
-
     prompt = f"""오늘 브리핑용 ★ 판단과 한 줄 코멘트를 JSON으로 반환해줘.
 
 오늘: {today} ({weekday}요일)
-GCal 공백 슬롯: {gap_desc}
-가장 긴 공백: {longest_desc}
-총 공백 시간: {total_gap_min}분
 
 [업무 태스크]
 {fmt_tasks(work_tasks)}
@@ -352,13 +292,11 @@ GCal 공백 슬롯: {gap_desc}
 ★ 판단 기준:
 - p1은 무조건 ★
 - p2 중 due date가 오늘({today})이면 ★
-- 총 공백 시간이 120분 미만인 날은 전체 ★를 2개 이하로 제한
 - 업무와 자기계발 각각 독립적으로 판단
 
 한 줄 코멘트 규칙:
 - 30자 이내, 한국어, 친근하고 실용적
 - 이모지 1개 포함
-- 가장 긴 공백 슬롯을 활용한 구체적 제안 포함
 
 JSON만 출력 (다른 텍스트 없이):
 {{"starred": ["태스크 텍스트1", "태스크 텍스트2"], "comment": "한 줄 코멘트"}}"""
@@ -504,9 +442,8 @@ def main():
     client = genai.Client(api_key=gemini_api_key)
 
     # Step 4 — LLM ★ + 코멘트
-    gap_slots = calculate_gap_slots(merged["gcal_events"])
     print("[Step 4] LLM ★ 판단 + 코멘트 생성 중...")
-    starred, comment = generate_stars_and_comment(client, merged, gap_slots)
+    starred, comment = generate_stars_and_comment(client, merged)
     print(f"[Step 4] ★ 태스크: {starred}")
     print(f"[Step 4] 코멘트: {comment}")
 
