@@ -108,6 +108,7 @@ def fetch_todoist_tasks() -> list:
         result.append({
             "text": task.get("content", ""),
             "priority": priority,
+            "due_date": due_date,
             "due_time": due_time,
             "project_name": project_name,
             "root_project_name": root_project_name,
