@@ -24,6 +24,15 @@ jobs:
         run: |
           pip install -r requirements.txt
 
+      - name: Verify Code Version
+        run: |
+          echo "=== Git SHA ==="
+          git rev-parse HEAD
+          echo "=== main.py 구분선 확인 ==="
+          grep -n "SEP\|━━━\|──────" main.py | head -10
+          echo "=== GEMINI_MODEL ==="
+          grep "GEMINI_MODEL" main.py
+
       - name: Run Agent
         env:
           TODOIST_API_KEY: ${{ secrets.TODOIST_API_KEY }}
