@@ -24,13 +24,6 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Debug Checkout
-        run: |
-          echo "=== Checked out commit ==="
-          git log --oneline -1
-          echo "=== main.py first 5 lines ==="
-          head -5 main.py
-
       - name: Run Agent
         env:
           TODOIST_API_KEY: ${{ secrets.TODOIST_API_KEY }}
