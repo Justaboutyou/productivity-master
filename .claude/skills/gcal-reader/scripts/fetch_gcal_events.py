@@ -89,6 +89,7 @@ def fetch_gcal_events() -> list:
             "title": event.get("summary", ""),
             "start": start_time,
             "end": end_time,
+            "colorId": event.get("colorId", ""),
         })
 
     return result

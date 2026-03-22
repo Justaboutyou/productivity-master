@@ -5,8 +5,8 @@ Todoist + GCal → Notion Morning + Discord 모닝 브리핑 에이전트 오케
   Step 1a — Todoist 오늘 태스크 수집    (fetch_todoist_tasks.py)
   Step 1b — GCal 오늘 일정 수집         (fetch_gcal_events.py)
   Step 2  — 2소스 병합                  (merged_context.json)
-  Step 3  — LLM 브리핑 생성             (Gemini)
-  Step 4  — LLM 자기 검증               (Gemini)
+  Step 3  — 규칙 기반 브리핑 포맷 생성
+  Step 4  — LLM 한 줄 코멘트 생성      (Gemini)
   Step 5  — Notion Morning 섹션 채우기  (write_notion_morning.py)
   Step 6  — Discord 발송                (send_discord_message.py)
 """
@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -41,8 +40,10 @@ BRIEFING_PATH = BASE_DIR / "output" / "briefing_draft.md"
 RUN_LOG_PATH = BASE_DIR / "output" / "run_log.json"
 
 KST = timezone(timedelta(hours=9))
-MAX_LLM_RETRIES = 2
 GEMINI_MODEL = "gemini-2.5-flash"
+
+PERSONAL_KEYWORDS = ["심리상담", "병원", "운동", "자세교정", "가족", "약속"]
+WORK_KEYWORDS = ["미팅", "스탠드업", "리뷰", "발표", "보고"]
 
 
 # ---------------------------------------------------------------------------
@@ -144,93 +145,122 @@ def run_step2(today: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Step 3 — LLM 브리핑 생성
+# Step 3 — 규칙 기반 분류 + 포맷 빌더
 # ---------------------------------------------------------------------------
 
-def build_briefing_prompt(merged: dict) -> str:
-    today_str = merged["date"]
-    dt = date.fromisoformat(today_str)
+def classify_gcal_event(event: dict) -> str:
+    if event.get("colorId") == "4":
+        return "personal"
+    title = event.get("title", "")
+    for kw in PERSONAL_KEYWORDS:
+        if kw in title:
+            return "personal"
+    for kw in WORK_KEYWORDS:
+        if kw in title:
+            return "work"
+    start_hour = int(event.get("start", "00:00").split(":")[0])
+    return "work" if 9 <= start_hour < 18 else "personal"
+
+
+def classify_todoist_task(task: dict) -> str:
+    root = task.get("root_project_name", "")
+    if root == "業務リスト":
+        return "work"
+    if root == "자기계발":
+        return "personal"
+    if root == "간단일 리스트":
+        return "backlog"
+    return "personal"  # 매핑 불명 → 개인 블록 fallback
+
+
+def build_formatted_briefing(merged: dict, comment: str) -> str:
+    dt = date.fromisoformat(merged["date"])
     weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
-    date_label = f"{dt.month:02d}/{dt.day:02d} {weekdays_ko[dt.weekday()]}"
-    context_json = json.dumps(merged, ensure_ascii=False, indent=2)
+    weekday = weekdays_ko[dt.weekday()]
+    date_label = f"{dt.month:02d}/{dt.day:02d} {weekday}요일"
+    is_weekday = dt.weekday() < 5
 
-    return f"""너는 개인 생산성 모닝 브리핑 어시스턴트야.
+    work_events = sorted(
+        [e for e in merged["gcal_events"] if classify_gcal_event(e) == "work"],
+        key=lambda e: e["start"],
+    )
+    personal_events = sorted(
+        [e for e in merged["gcal_events"] if classify_gcal_event(e) == "personal"],
+        key=lambda e: e["start"],
+    )
+    work_tasks = [t for t in merged["todoist"] if classify_todoist_task(t) == "work"]
+    personal_tasks = [t for t in merged["todoist"] if classify_todoist_task(t) == "personal"]
+    backlog_tasks = [t for t in merged["todoist"] if classify_todoist_task(t) == "backlog"]
 
-아래 JSON 컨텍스트를 읽고 Discord 브리핑 메시지를 작성해줘.
+    lines = [
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        f"  브리핑 · {date_label}",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+    ]
 
-**출력 형식 (정확히 따라야 함)**:
-🌅 오늘의 브리핑 ({date_label})
+    def render_block(label, events, tasks):
+        block = [label]
+        for e in events:
+            block.append(f"  🗓 {e['start']}  {e['title']}")
+        for t in tasks:
+            star = "  ★" if t.get("priority") == 1 else ""
+            block.append(f"  ⬜ {t['text']}{star}")
+        return block
 
-⭐ 오늘의 Top 3
-• [GCal 시간 컨텍스트 →] 태스크 (p우선순위)
-• ...
+    if is_weekday and (work_events or work_tasks):
+        work_start = work_events[0]["start"] if work_events else "09:00"
+        work_end = work_events[-1]["end"] if work_events else "18:00"
+        lines += render_block(f"💼 업무  ({work_start}~{work_end})", work_events, work_tasks)
+        lines.append("")
 
-📋 기타
-• 태스크 (p우선순위)
+    if personal_events or personal_tasks:
+        personal_start = personal_events[0]["start"] if personal_events else ""
+        label = f"🌙 개인  ({personal_start}~)" if personal_start else "🌙 개인"
+        lines += render_block(label, personal_events, personal_tasks)
+        lines.append("")
 
-💬 한 줄 동기부여 코멘트
+    if backlog_tasks:
+        texts = " · ".join(t["text"] for t in backlog_tasks)
+        lines += ["📦 백로그 → Todoist", f"  {texts}", ""]
 
-**Top 3 선정 규칙**:
-1. GCal 일정이 있는 시간대와 시간적으로 인접한 Todoist 태스크 우선
-2. 동일 시간대에 여러 태스크가 있으면 p1 > p2 > p3 순
-3. GCal 없으면 Todoist p1 → p2 → p3 순서로 선정
-
-**기타 규칙**:
-- 📋 기타 섹션은 Top 3에 포함되지 않은 나머지 Todoist 태스크 (없으면 섹션 생략)
-- 전체 500자 이내
-- Discord markdown 사용
-- 한국어로 작성
-
-컨텍스트 (JSON):
-{context_json}
-
-브리핑 메시지만 출력해줘. 다른 설명 불필요."""
+    lines += [
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        f"  {comment}",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    return "\n".join(lines)
 
 
-def generate_briefing(client: genai.Client, merged: dict) -> str:
-    prompt = build_briefing_prompt(merged)
+# ---------------------------------------------------------------------------
+# Step 4 — LLM 한 줄 코멘트 생성
+# ---------------------------------------------------------------------------
+
+def generate_comment(client: genai.Client, merged: dict) -> str:
+    dt = date.fromisoformat(merged["date"])
+    weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
+    weekday = weekdays_ko[dt.weekday()]
+    tasks = [t for t in merged["todoist"] if t.get("root_project_name") != "간단일 리스트"]
+    p1_count = sum(1 for t in tasks if t.get("priority") == 1)
+    event_times = [e["start"] for e in merged["gcal_events"]]
+
+    prompt = f"""오늘 브리핑 하단에 들어갈 한 줄 코멘트를 작성해줘.
+
+컨텍스트:
+- 오늘: {weekday}요일
+- GCal 일정: {len(event_times)}개 {event_times}
+- p1 태스크: {p1_count}개
+- 전체 태스크: {len(tasks)}개
+
+규칙:
+- 한 줄, 30자 이내
+- 한국어, 친근하고 실용적
+- 이모지 1개 포함
+- 매번 다른 표현
+
+한 줄 코멘트만 출력해줘."""
     response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
     return response.text.strip()
-
-
-# ---------------------------------------------------------------------------
-# Step 4 — LLM 자기 검증
-# ---------------------------------------------------------------------------
-
-def build_verify_prompt(briefing: str, merged: dict) -> str:
-    context_json = json.dumps(merged, ensure_ascii=False, indent=2)
-    return f"""아래 브리핑이 조건을 충족하는지 확인해줘.
-
-조건:
-1. ⭐ 오늘의 Top 3 섹션이 존재하는가
-2. 전체 {len(briefing)}자 — 500자 이내인가
-3. 톤이 적절한가 (친근하고 간결한 한국어)
-
-원본 컨텍스트:
-{context_json}
-
-브리핑:
-{briefing}
-
-결과를 반드시 아래 JSON 형식으로만 반환해줘:
-{{"pass": true, "issues": []}}
-또는
-{{"pass": false, "issues": ["이슈1"]}}"""
-
-
-def verify_briefing(client: genai.Client, briefing: str, merged: dict) -> dict:
-    prompt = build_verify_prompt(briefing, merged)
-    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-    text = response.text.strip()
-
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
-
-    return {"pass": True, "issues": []}
 
 
 # ---------------------------------------------------------------------------
@@ -278,26 +308,19 @@ def run_step6() -> bool:
 def make_empty_briefing(today: str) -> str:
     dt = date.fromisoformat(today)
     weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
-    date_label = f"{dt.month:02d}/{dt.day:02d} {weekdays_ko[dt.weekday()]}"
-    return f"🌅 오늘의 브리핑 ({date_label})\n\n오늘은 등록된 태스크와 일정이 없습니다. 자유로운 하루! 😌"
-
-
-# ---------------------------------------------------------------------------
-# Top 3 추출 (로그용)
-# ---------------------------------------------------------------------------
-
-def extract_top3(briefing: str) -> list[str]:
-    top3 = []
-    in_top3 = False
-    for line in briefing.split("\n"):
-        if "⭐ 오늘의 Top 3" in line:
-            in_top3 = True
-            continue
-        if in_top3 and line.strip().startswith("•"):
-            top3.append(line.strip()[1:].strip())
-        elif in_top3 and line.strip() and not line.strip().startswith("•"):
-            break
-    return top3
+    weekday = weekdays_ko[dt.weekday()]
+    date_label = f"{dt.month:02d}/{dt.day:02d} {weekday}요일"
+    return "\n".join([
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        f"  브리핑 · {date_label}",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "오늘은 등록된 태스크와 일정이 없습니다.",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        "  자유로운 하루! 😌",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +331,6 @@ def main():
     today = date.today().isoformat()
     sources_collected = []
     sources_skipped = []
-    retry_count = 0
     notion_write_status = "skipped"
 
     # Step 1a — Todoist
@@ -343,44 +365,31 @@ def main():
             todo_count=0,
             event_count=0,
             notion_write_status=notion_write_status,
-            top3_items=[],
-            retry_count=0,
+            comment="",
         ))
         if not success:
             sys.exit(1)
         return
 
-    # Step 3 & 4 — LLM
+    # Step 3/4 — 규칙 기반 포맷 + LLM 코멘트
     gemini_api_key = os.environ.get("GEMINI_API_KEY")
     if not gemini_api_key:
         print("Missing GEMINI_API_KEY", file=sys.stderr)
         sys.exit(1)
 
     client = genai.Client(api_key=gemini_api_key)
-    briefing = ""
 
-    for attempt in range(MAX_LLM_RETRIES + 1):
-        print(f"[Step 3] 브리핑 생성 중... (시도 {attempt + 1}/{MAX_LLM_RETRIES + 1})")
-        briefing = generate_briefing(client, merged)
+    print("[Step 4] LLM 코멘트 생성 중...")
+    comment = generate_comment(client, merged)
+    print(f"[Step 4] 코멘트: {comment}")
 
-        print("[Step 4] 검증 중...")
-        verify_result = verify_briefing(client, briefing, merged)
-
-        if verify_result.get("pass"):
-            retry_count = attempt
-            print("[Step 4] 검증 통과 ✓")
-            break
-
-        print(f"[Step 4] 검증 실패: {verify_result.get('issues', [])}")
-        if attempt == MAX_LLM_RETRIES:
-            print("[Step 4] 최대 재시도 초과 → merged_context.json 원문 발송")
-            briefing = f"🌅 오늘의 브리핑 ({today})\n\n{json.dumps(merged, ensure_ascii=False, indent=2)}"
-            retry_count = MAX_LLM_RETRIES
+    print("[Step 3] 규칙 기반 브리핑 포맷 빌드 중...")
+    briefing = build_formatted_briefing(merged, comment)
 
     # 브리핑 저장
     BRIEFING_PATH.parent.mkdir(parents=True, exist_ok=True)
     BRIEFING_PATH.write_text(briefing)
-    print("[Step 3/4] 브리핑 저장 완료")
+    print("[Step 3] 브리핑 저장 완료")
 
     # Step 5 — Notion Write
     notion_write_status = run_step5()
@@ -396,8 +405,7 @@ def main():
         todo_count=todo_count,
         event_count=event_count,
         notion_write_status=notion_write_status,
-        top3_items=extract_top3(briefing),
-        retry_count=retry_count,
+        comment=comment,
     ))
 
     if not success:
