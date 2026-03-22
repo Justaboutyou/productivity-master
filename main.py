@@ -210,12 +210,27 @@ def classify_todoist_task(task: dict) -> str:
     return "personal"  # 매핑 불명 → 개인 블록 fallback
 
 
-def build_formatted_briefing(merged: dict, comment: str) -> str:
+def render_events_with_gaps(events: list) -> list[str]:
+    """이벤트 목록을 'HH:MM - HH:MM  제목' 형식으로 렌더링. 30분 이상 공백은 ··· 줄 삽입."""
+    lines = []
+    prev_end = None
+    for event in events:
+        if prev_end is not None:
+            gap = time_to_minutes(event["start"]) - time_to_minutes(prev_end)
+            if gap >= 30:
+                lines.append(f"  {format_gap(gap)}")
+        lines.append(f"  {event['start']} - {event['end']}  {event['title']}")
+        prev_end = event["end"]
+    return lines
+
+
+def build_formatted_briefing(merged: dict, starred: list[str], comment: str) -> str:
     dt = date.fromisoformat(merged["date"])
     weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
     weekday = weekdays_ko[dt.weekday()]
     date_label = f"{dt.month:02d}/{dt.day:02d} {weekday}요일"
     is_weekday = dt.weekday() < 5
+    starred_set = set(starred)
 
     work_events = sorted(
         [e for e in merged["gcal_events"] if classify_gcal_event(e) == "work"],
@@ -229,43 +244,54 @@ def build_formatted_briefing(merged: dict, comment: str) -> str:
     personal_tasks = [t for t in merged["todoist"] if classify_todoist_task(t) == "personal"]
     backlog_tasks = [t for t in merged["todoist"] if classify_todoist_task(t) == "backlog"]
 
-    lines = [
-        "━━━━━━━━━━━━━━━━━━━━━━━",
-        f"  브리핑 · {date_label}",
-        "━━━━━━━━━━━━━━━━━━━━━━━",
-        "",
-    ]
+    SEP = "──────────────────────────"
+    lines: list[str] = [SEP, f"브리핑 · {date_label}", SEP, ""]
 
-    def render_block(label, events, tasks):
-        block = [label]
-        for e in events:
-            block.append(f"  🗓 {e['start']}  {e['title']}")
-        for t in tasks:
-            star = "  ★" if t.get("priority") == 1 else ""
-            block.append(f"  ⬜ {t['text']}{star}")
-        return block
+    # ── 1. 일정 섹션 ──
+    if is_weekday:
+        if work_events:
+            lines.append("💼 일정 (업무)")
+            lines += render_events_with_gaps(work_events)
+            lines.append("")
+        if personal_events:
+            lines.append("🌙 일정 (개인)")
+            lines += render_events_with_gaps(personal_events)
+            lines.append("")
+    else:
+        all_events = sorted(merged["gcal_events"], key=lambda e: e["start"])
+        if all_events:
+            lines.append("🌙 일정")
+            lines += render_events_with_gaps(all_events)
+            lines.append("")
 
-    if is_weekday and (work_events or work_tasks):
-        work_start = work_events[0]["start"] if work_events else "09:00"
-        work_end = work_events[-1]["end"] if work_events else "18:00"
-        lines += render_block(f"💼 업무  ({work_start}~{work_end})", work_events, work_tasks)
-        lines.append("")
+    # ── 2. 업무 섹션 ──
+    lines.append("💼 업무")
+    if work_tasks:
+        for t in work_tasks:
+            star = "  ★" if t["text"] in starred_set else ""
+            lines.append(f"  {t['text']}{star}")
+    else:
+        lines.append("  (없음)")
+    lines.append("")
 
-    if personal_events or personal_tasks:
-        personal_start = personal_events[0]["start"] if personal_events else ""
-        label = f"🌙 개인  ({personal_start}~)" if personal_start else "🌙 개인"
-        lines += render_block(label, personal_events, personal_tasks)
-        lines.append("")
+    # ── 3. 자기계발 섹션 ──
+    lines.append("📚 자기계발")
+    if personal_tasks:
+        for t in personal_tasks:
+            star = "  ★" if t["text"] in starred_set else ""
+            lines.append(f"  {t['text']}{star}")
+    else:
+        lines.append("  (없음)")
+    lines.append("")
 
+    # ── 4. 백로그 섹션 ──
     if backlog_tasks:
         texts = " · ".join(t["text"] for t in backlog_tasks)
-        lines += ["📦 백로그 → Todoist", f"  {texts}", ""]
+        lines += ["📦 백로그", f"  {texts}", ""]
 
-    lines += [
-        "━━━━━━━━━━━━━━━━━━━━━━━",
-        f"  {comment}",
-        "━━━━━━━━━━━━━━━━━━━━━━━",
-    ]
+    # ── 5. LLM 코멘트 ──
+    lines += [SEP, f'"{comment}"', SEP]
+
     return "\n".join(lines)
 
 
