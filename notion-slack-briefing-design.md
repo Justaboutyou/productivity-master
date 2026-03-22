@@ -1,9 +1,20 @@
 # 에이전트 시스템 설계서
-## 노션 일지 → 슬랙 모닝 브리핑 자동화
+## 개인 생산성 모닝 브리핑 자동화
 
-**버전**: v1.0  
-**작성일**: 2026-03-20  
+**버전**: v3.0
+**작성일**: 2026-03-22
 **용도**: Claude Code 구현 참조용 계획서
+**이전 버전**: v2.0 — Notion 이월 소스 포함, 3소스 병합, Discord 발송
+
+---
+
+## 변경 이력
+
+| 버전 | 주요 변경 |
+|------|-----------|
+| v1.0 | Notion 단일 소스, Slack 발송, 5단계 워크플로우 |
+| v2.0 | Todoist + Notion(이월) + GCal 3소스, Discord 발송 |
+| v3.0 | Notion → 출력 대상으로 역할 역전, Morning 섹션 자동 채움, 이월 개념 제거 |
 
 ---
 
@@ -11,298 +22,367 @@
 
 ### 배경 및 목적
 
-매일 아침 전날 작성한 노션 일지를 읽고, 오늘 해야 할 일을 파악하여 슬랙 채널에 브리핑 메시지를 자동 발송한다. 수동으로 일지를 확인하고 할일을 정리하는 반복 작업을 자동화하여, 아침 루틴의 인지 부하를 줄이고 업무 집중도를 높이는 것이 목적이다.
+매일 아침 Todoist 오늘 태스크와 Google Calendar 오늘 일정을 통합해 **Notion 일지 Morning 섹션을 자동으로 채우고**, Discord 개인 서버에 브리핑 메시지를 발송한다. 아침 기상 후 무엇부터 해야 할지 판단하는 인지 부하를 줄이는 것이 목적이며, 브리핑은 **기억력 보조 도구**다 — 새로운 정보를 제공하는 것이 아니라 이미 알고 있는 것을 정리해주는 역할이다.
 
-### 범위
+### v3.0 핵심 변경 요약
 
-- **포함**: 노션 일지 조회 → 할일 추출 → LLM 요약/우선순위화 → 슬랙 발송
-- **제외**: 노션 일지 작성, 할일 완료 처리, 슬랙 스레드 응답 처리
+| 항목 | 변경 전 (v2.0) | 변경 후 (v3.0) |
+|------|---------------|---------------|
+| Notion 역할 | 수동 작성 → 이월 소스 | LLM이 Morning 섹션 자동 채움 (출력 대상) |
+| 소스 수 | 3소스 (Todoist + Notion + GCal) | 2소스 (Todoist + GCal) |
+| Step 1b | Notion 이월 수집 | **제거** |
+| Step 5 | Discord 발송 | **Notion Write** (신규) |
+| Step 6 | 없음 | **Discord 발송** (기존 Step 5) |
+| 이월 항목 섹션 | `⚠️ 어제 이월` 존재 | **제거** (Todoist가 이미 관리) |
+| Brain Dump | 수동 작성 | LLM이 나머지 Todoist 태스크로 자동 채움 |
 
-### 입출력 정의
+### 프로젝트 성격
+
+- **완전한 개인 도구** — 단일 사용자, 개인 Discord 서버로 발송
+- **점진적 개발** — 프로토타입에서 시작해 생산성 툴 최적화 방향으로 발전 중
+- **실험적 플랫폼** — 다양한 API 연동 학습 및 개인 워크플로우 자동화 탐구
+
+### 소비 패턴 (설계 원칙 도출 기준)
 
 | 항목 | 내용 |
 |------|------|
-| **입력** | 어제 날짜의 노션 일지 페이지 (체크박스/특정 헤딩 아래 할일 블록 포함) |
-| **출력** | 슬랙 채널에 발송된 모닝 브리핑 메시지 (우선순위 정리 + 코멘트 포함) |
-| **트리거** | 매일 아침 정해진 시간 (cron 스케줄러) |
+| **수신 방법** | 기상 알람 후 Discord 알림으로 모바일 확인 |
+| **읽는 방식** | 한 번 읽고 실행 — 이후 재참조 없음 |
+| **기기** | 모바일 우선 (침대에서 폰으로 확인) |
+| **이상형 메시지** | 스크롤 없이 한 화면에 들어오는 밀도 |
 
-### 주요 제약조건
-
-- 노션 API를 통한 페이지 조회 (Notion Integration Token 필요)
-- 슬랙 Incoming Webhook 또는 Bot Token을 통한 메시지 발송
-- 일지가 존재하지 않는 경우 (휴일, 미작성) 처리 필요
-- 할일 블록이 비어있는 경우에도 정상 동작해야 함
-
-### 용어 정의
-
-| 용어 | 정의 |
-|------|------|
-| **일지 페이지** | 날짜가 제목에 포함된 노션 데이터베이스 항목 |
-| **할일 블록** | 노션의 to_do 타입 블록, 또는 특정 헤딩(예: "오늘 할 일") 아래 블록 |
-| **브리핑 메시지** | LLM이 작성한 우선순위 정리 + 간략한 코멘트가 포함된 슬랙 메시지 |
-| **스케줄러** | cron 또는 GitHub Actions 등 시간 기반 자동 실행 도구 |
+→ **500자 이내, 다중 섹션 구분이 있는 포맷이 최적**
 
 ---
 
-## 2. 워크플로우 정의
+## 2. 핵심 설계 결정
+
+| 항목 | 결정 | 이유 |
+|------|------|------|
+| **발송 채널** | Discord Incoming Webhook (개인 서버) | 개인 도구, Slack 대비 비용/편의성 우위 |
+| **LLM** | Gemini `gemini-2.5-flash` | Free tier로 GitHub Actions 무료 운영 (매일 1회 = Rate limit 무관) |
+| **실행 환경** | GitHub Actions cron | 서버리스, 비용 0 |
+| **실행 시간** | 08:00 JST = UTC `23:00 (전날)` | 기상 후 첫 확인 타이밍 |
+| **Notion 역할** | 출력 대상 — Morning 섹션 자동 채움 | 수동 작성 부담 제거, LLM이 Todoist+GCal에서 자동 도출 |
+| **Notion 쓰기 범위** | Morning 섹션만 (Top Priorities 3 + Brain Dump) | Night 성찰 섹션은 사람이 직접 작성하는 영역 |
+| **Notion 쓰기 방식** | 텍스트 블록 (체크박스 아님) | 기록/참조 목적, 완료 체크는 Todoist에서 |
+| **Notion 덮어쓰기 정책** | 비어있으면 채움, 내용 있으면 append | 직접 쓴 내용 보존 + LLM 제안 구분선으로 구분 |
+| **이월 개념** | 제거 | Todoist가 이미 미완료 태스크 이월 관리 |
+| **Top 3 도출 기준** | GCal 일정 시간대 전후 인접 태스크 우선 | 캘린더 기준으로 하루를 구조화하는 것이 가장 실용적 |
+| **브리핑 메시지 구조** | ⭐ Top 3 → 📋 기타 2단 구조 | 이월 섹션 제거로 단순화 |
+| **run_log 설계** | 패턴 분석을 위한 충분한 필드 포함 | 나중에 패턴 분석 가능하도록 |
+
+---
+
+## 3. 워크플로우
 
 ### 전체 흐름
 
 ```
-[스케줄러 트리거]
-       │
-       ▼
-┌─────────────────┐
-│ Step 1          │
-│ 어제 날짜 계산   │ ← Python 스크립트
-│ + 노션 페이지   │
-│   조회          │
-└────────┬────────┘
-         │
-         ▼
-    페이지 존재?
-    ├── NO  → [스킵 + 로그] "일지 없음" 기록 후 종료
-    └── YES
-         │
-         ▼
-┌─────────────────┐
-│ Step 2          │
-│ 할일 블록 추출   │ ← Python 스크립트
-│ (노션 API)      │
-└────────┬────────┘
-         │
-         ▼
-    할일 존재?
-    ├── NO  → [에스컬레이션 or 스킵] 빈 브리핑 발송 여부 판단
-    └── YES
-         │
-         ▼
-┌─────────────────┐
-│ Step 3          │
-│ LLM 브리핑      │ ← LLM 판단 영역
-│ 메시지 생성      │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Step 4          │
-│ LLM 자기 검증   │ ← LLM 판단 영역
-└────────┬────────┘
-         │
-         ▼
+[GitHub Actions cron — 08:00 JST = UTC 23:00 (전날)]
+
+   ┌──────────────┐
+   ▼              ▼
+Step 1a        Step 1b
+Todoist        GCal
+수집           수집
+   │              │
+   └──────┬───────┘
+          ▼
+       Step 2
+     2소스 병합
+  (merged_context.json)
+          │
+          ▼
+       Step 3
+  LLM 브리핑 생성
+  (Top 3 도출 포함)
+          │
+          ▼
+       Step 4
+  LLM 자기검증
+          │
     검증 통과?
-    ├── NO (재시도 ≤ 2회) → Step 3으로 복귀
-    └── YES
-         │
-         ▼
-┌─────────────────┐
-│ Step 5          │
-│ 슬랙 발송       │ ← Python 스크립트
-└────────┬────────┘
-         │
-         ▼
-    발송 성공?
-    ├── NO → [에스컬레이션] 에러 로그 + 알림
-    └── YES → [완료] 실행 로그 기록
+    ├── NO (≤2회) → Step 3 재시도
+    └── YES (또는 2회 초과 → 원문 발송)
+          │
+          ▼
+       Step 5  ← NEW
+  Notion Write
+  (Morning 섹션 채움)
+          │
+          ▼
+       Step 6
+   Discord 발송
 ```
 
 ### 단계별 상세
 
-#### Step 1: 노션 페이지 조회
+#### Step 1a: Todoist 오늘 태스크 수집
 
 | 항목 | 내용 |
 |------|------|
 | **처리 방식** | Python 스크립트 |
-| **동작** | 어제 날짜 계산 → 노션 DB 쿼리 → 해당 일지 페이지 ID 반환 |
-| **성공 기준** | 어제 날짜의 페이지 ID를 정상 반환 |
-| **검증 방법** | 스키마 검증 (page_id 필드 존재 여부) |
-| **실패 시** | 페이지 없음 → 스킵 + 로그 기록 후 종료 / API 오류 → 에스컬레이션 |
+| **동작** | 오늘 due date인 미완료 태스크 전체 조회 (p1~p4 포함) |
+| **성공 기준** | 태스크 배열 반환 (빈 배열도 성공) |
+| **실패 시** | skip + 로그 기록, 나머지 소스로 계속 진행 |
+| **출력** | `output/todoist_raw.json` |
 
-#### Step 2: 할일 블록 추출
+#### Step 1b: Google Calendar 오늘 일정 수집
 
 | 항목 | 내용 |
 |------|------|
 | **처리 방식** | Python 스크립트 |
-| **동작** | 페이지 블록 조회 → `to_do` 타입 또는 지정 헤딩 하위 블록 필터링 → JSON 저장 |
-| **성공 기준** | 할일 리스트 배열 반환 (빈 배열도 성공으로 처리) |
-| **검증 방법** | 스키마 검증 (배열 타입 확인) |
-| **실패 시** | API 오류 → 자동 재시도 1회 → 실패 시 에스컬레이션 |
+| **동작** | 오늘 00:00~23:59 JST 이벤트 전체 조회 |
+| **인증** | Service Account JSON (base64) — `GCAL_CREDENTIALS_JSON` |
+| **실패 시** | skip + 로그 기록, 나머지 소스로 계속 진행 |
+| **출력** | `output/gcal_raw.json` |
 
-#### Step 3: LLM 브리핑 메시지 생성 ← LLM 판단 영역
+#### Step 2: 2소스 병합
 
 | 항목 | 내용 |
 |------|------|
-| **처리 방식** | LLM (Claude) |
-| **동작** | 추출된 할일 목록을 읽고 우선순위 판단 → 간략한 코멘트 포함 슬랙 메시지 작성 |
-| **LLM 판단 내용** | 업무 중요도·긴급도 판단, 관련 할일 그루핑, 동기부여 코멘트 생성 |
-| **성공 기준** | 슬랙 메시지 형식 준수 + 원본 할일 누락 없음 + 500자 이내 |
-| **검증 방법** | LLM 자기 검증 (Step 4) |
+| **처리 방식** | Python (main.py 인라인) |
+| **동작** | 2소스 JSON 읽어 `merged_context.json` 생성 |
+| **출력** | `output/merged_context.json` |
+
+#### Step 3: LLM 브리핑 생성 ← LLM 판단 영역
+
+| 항목 | 내용 |
+|------|------|
+| **처리 방식** | LLM (Gemini gemini-2.5-flash) |
+| **핵심 동작** | GCal 시간 블록 + Todoist 우선순위 분석 → **Top 3 도출** → 2단 구조 브리핑 작성 |
+| **Top 3 선정 기준** | GCal 일정이 있는 시간대와 시간적으로 인접한 태스크 우선 배치 |
+| **성공 기준** | 2단 구조 준수 + 원본 항목 누락 없음 + 500자 이내 |
 | **실패 시** | 자동 재시도 최대 2회 |
+| **출력** | `output/briefing_draft.md` |
 
-**메시지 형식 예시**:
+**브리핑 메시지 2단 구조:**
 ```
-🌅 오늘의 할일 브리핑 (03/20 목)
+🌅 오늘의 브리핑 (03/22 토)
 
-📌 우선순위 높음
-• [회의 준비] 오전 10시 전략 회의 자료 완성
-• [마감] 월간 보고서 초안 제출
+⭐ 오늘의 Top 3
+• 10시 회의 전에 → 전략 자료 준비 (p1)
+• 14시~16시 슬롯 → 월간 보고서 초안 (p1)
+• 저녁 전 → 팀 메시지 회신 (p2)
 
-📋 일반
-• 팀 슬랙 메시지 확인 및 회신
-• Claude Code 설계서 검토
+📋 기타
+• 개발 환경 업데이트 (p3)
+• 문서 정리 (p4)
 
-💬 오늘도 하나씩, 차분하게.
+💬 오늘도 집중해서.
 ```
 
-#### Step 4: LLM 자기 검증 ← LLM 판단 영역
+#### Step 4: LLM 자기검증 ← LLM 판단 영역
 
 | 항목 | 내용 |
 |------|------|
-| **처리 방식** | LLM (Claude) |
-| **동작** | 생성된 메시지와 원본 할일 목록을 대조하여 품질 검증 |
-| **검증 항목** | ① 원본 할일 전체 포함 여부 ② 슬랙 포맷 준수 ③ 500자 이내 ④ 톤 적절성 |
-| **성공 기준** | 4가지 항목 모두 통과 |
-| **실패 시** | Step 3 재생성 요청 (최대 2회) → 2회 초과 시 원본 할일 목록을 그대로 발송 |
+| **처리 방식** | LLM (인라인, 토큰 최소화 프롬프트) |
+| **검증 항목** | ① 2단 구조 준수 ② 500자 이내 ③ 톤 적절성 |
+| **실패 시** | Step 3 재시도 (최대 2회) → 초과 시 `merged_context.json` 원문 발송 |
 
-#### Step 5: 슬랙 발송
+#### Step 5: Notion Write ← NEW
+
+| 항목 | 내용 |
+|------|------|
+| **처리 방식** | Python 스크립트 (`notion-writer` 스킬) |
+| **대상 섹션** | Morning: **Top Priorities 3** + **Brain Dump** |
+| **보존 섹션** | Night: 성찰과 감사 — **절대 건드리지 않음** |
+| **쓰기 방식** | 텍스트 블록 (to_do 체크박스 아님) |
+| **페이지 없음** | 오늘 날짜 신규 페이지 생성 후 템플릿 구조로 채움 |
+| **Morning 비어있음** | Top Priorities 3 = LLM Top 3, Brain Dump = 나머지 Todoist |
+| **Morning 내용 있음** | 구분선 + `🤖 LLM 제안` 헤딩 추가 후 append |
+| **실패 시** | skip + 로그 기록, Discord 발송은 계속 진행 |
+
+**Notion 페이지 구조 (자동 생성 시):**
+```
+☀️ Morning: 오늘 하루를 어떻게 보낼까요?
+
+1️⃣ Top Priorities 3
+10시 회의 전에 → 전략 자료 준비 (p1)
+14시~16시 슬롯 → 월간 보고서 초안 (p1)
+저녁 전 → 팀 메시지 회신 (p2)
+
+2️⃣ Brain Dump
+개발 환경 업데이트 (p3)
+문서 정리 (p4)
+
+🌙 Night: 성찰과 감사 (오늘 하루는 어땠나요?)
+• 오늘 내가 잘한 것 1가지는?
+• 오늘 무엇을 더 잘할 수 있었을까? (Better Me)
+```
+
+#### Step 6: Discord 발송
 
 | 항목 | 내용 |
 |------|------|
 | **처리 방식** | Python 스크립트 |
-| **동작** | 검증된 메시지를 슬랙 Webhook/API로 POST 요청 |
+| **동작** | `output/briefing_draft.md` 읽어 Discord Webhook으로 POST |
 | **성공 기준** | HTTP 200 응답 |
-| **검증 방법** | 규칙 기반 (응답 코드 확인) |
-| **실패 시** | 자동 재시도 2회 → 실패 시 에러 로그 기록 + 에스컬레이션 알림 |
+| **실패 시** | 자동 재시도 2회 → 실패 시 에러 로그 + 에스컬레이션 |
 
 ---
 
-## 3. 구현 스펙
+## 4. 구현 스펙
 
-### 3-1. 폴더 구조
+### 4-1. 기술 스택
+
+| 항목 | 내용 |
+|------|------|
+| **Runtime** | Python 3.11 |
+| **Scheduler** | GitHub Actions cron (`0 23 * * *` UTC = 08:00 JST) |
+| **Todoist API** | REST v2 (`TODOIST_API_KEY`) |
+| **Notion API** | REST (`NOTION_TOKEN`, `NOTION_DATABASE_ID`) |
+| **GCal API** | REST, Service Account JSON base64 (`GCAL_CREDENTIALS_JSON`) |
+| **LLM** | Gemini `gemini-2.5-flash` (`google-genai` SDK, `GEMINI_API_KEY`) |
+| **Discord** | Incoming Webhook (`DISCORD_WEBHOOK_URL`) |
+
+### 4-2. 폴더 구조
 
 ```
-/notion-slack-briefing
-  ├── CLAUDE.md                              # 메인 에이전트 지침 (오케스트레이터)
-  ├── /.claude
-  │   └── /skills
-  │       ├── /notion-reader                 # 노션 API 조회 스킬
-  │       │   ├── SKILL.md
-  │       │   ├── /scripts
-  │       │   │   ├── fetch_yesterday_page.py
-  │       │   │   └── extract_todo_blocks.py
-  │       │   └── /references
-  │       │       └── notion_api_guide.md
-  │       ├── /briefing-generator            # LLM 브리핑 생성 스킬
-  │       │   ├── SKILL.md
-  │       │   └── /references
-  │       │       └── message_format_guide.md
-  │       └── /slack-sender                  # 슬랙 발송 스킬
-  │           ├── SKILL.md
-  │           └── /scripts
-  │               └── send_slack_message.py
-  ├── /output
-  │   ├── todo_raw.json                      # Step 2 산출물: 추출된 할일 원본
-  │   ├── briefing_draft.md                  # Step 3 산출물: LLM 생성 메시지
-  │   └── run_log.json                       # 실행 이력 로그
-  ├── /docs
-  │   └── setup_guide.md                     # 초기 설정 가이드 (토큰, 채널 등)
-  └── scheduler
-      └── run.sh                             # cron 진입점
+/
+├── main.py                          # 진입점 — 6단계 오케스트레이터
+├── requirements.txt
+├── CLAUDE.md
+├── .claude/skills/
+│   ├── todoist-reader/
+│   │   ├── SKILL.md
+│   │   └── scripts/fetch_todoist_tasks.py       # 변경 없음
+│   ├── gcal-reader/
+│   │   ├── SKILL.md
+│   │   └── scripts/fetch_gcal_events.py         # 변경 없음
+│   ├── notion-writer/                            # NEW (notion-reader 대체)
+│   │   ├── SKILL.md
+│   │   └── scripts/write_notion_morning.py      # Morning 섹션 채우기
+│   ├── briefing-generator/
+│   │   ├── SKILL.md
+│   │   └── references/message_format_guide.md   # 2단 구조로 업데이트
+│   └── discord-sender/
+│       ├── SKILL.md
+│       └── scripts/send_discord_message.py      # 변경 없음
+├── output/
+│   ├── todoist_raw.json
+│   ├── gcal_raw.json
+│   ├── merged_context.json
+│   ├── briefing_draft.md
+│   └── run_log.json                             # append-only
+└── .github/workflows/daily_agent.yml
 ```
 
-### 3-2. CLAUDE.md 핵심 섹션 목록
+**제거되는 파일:**
+- `.claude/skills/notion-reader/` (디렉토리 전체)
+- `output/notion_raw.json`
 
-- **역할 정의**: 노션-슬랙 브리핑 오케스트레이터
-- **실행 순서**: Step 1 → 2 → 3 → 4 → 5 순서 명시
-- **스킬 호출 조건**: 각 스텝별 호출 스킬 명시
-- **분기 처리**: 페이지 없음 / 할일 없음 / 검증 실패 각 케이스 처리 지침
-- **환경 변수**: NOTION_TOKEN, NOTION_DATABASE_ID, SLACK_WEBHOOK_URL
-- **로그 규격**: run_log.json 기록 형식
+### 4-3. 산출물 스키마
 
-### 3-3. 에이전트 구조
-
-**단일 에이전트** 채택.
-
-워크플로우가 순차적이고 총 5단계로 단순하며, 각 단계 간 컨텍스트 전달량이 적다. 서브에이전트로 분리할 만큼 각 역할의 도메인 지식 차이가 크지 않으므로 단일 에이전트가 오케스트레이터 겸 실행자로 동작한다.
-
-### 3-4. 스킬 목록
-
-| 스킬명 | 역할 | 트리거 조건 |
-|--------|------|-----------|
-| `notion-reader` | 노션 API 호출로 일지 페이지 조회 및 할일 블록 추출 | Step 1, 2 진입 시 |
-| `briefing-generator` | LLM 프롬프트 지침 및 메시지 포맷 가이드 제공 | Step 3 브리핑 생성 시 |
-| `slack-sender` | 슬랙 Webhook으로 메시지 POST 발송 | Step 5 발송 시 |
-
-### 3-5. 스킬별 스크립트 역할
-
-**notion-reader/scripts/**
-- `fetch_yesterday_page.py`: 어제 날짜 계산 → 노션 DB 쿼리 → page_id 반환, `output/` 없으면 종료 코드로 분기 신호
-- `extract_todo_blocks.py`: page_id를 인자로 받아 할일 블록 파싱 → `output/todo_raw.json` 저장
-
-**slack-sender/scripts/**
-- `send_slack_message.py`: `output/briefing_draft.md` 읽어 슬랙 Webhook으로 POST, 성공/실패 응답 코드 반환
-
-### 3-6. 데이터 전달 방식
-
-| 단계 간 전달 | 방식 | 파일 경로 |
-|-------------|------|----------|
-| Step 2 → Step 3 | 파일 기반 | `output/todo_raw.json` |
-| Step 3 → Step 4 | 프롬프트 인라인 | (메시지 텍스트가 짧으므로 인라인) |
-| Step 4 → Step 5 | 파일 기반 | `output/briefing_draft.md` |
-
-### 3-7. 주요 산출물 파일 형식
-
-**`output/todo_raw.json`** (Step 2 출력)
+**`output/merged_context.json`** (v3.0 — notion_carry_over 제거)
 ```json
 {
-  "date": "2026-03-19",
-  "page_id": "xxxx-xxxx-xxxx",
-  "todos": [
-    { "text": "월간 보고서 초안 작성", "checked": false },
-    { "text": "팀 미팅 준비", "checked": false }
+  "date": "YYYY-MM-DD",
+  "todoist": [
+    { "text": "할일 내용", "priority": 1, "due_time": "09:00" }
+  ],
+  "gcal_events": [
+    { "title": "이벤트 제목", "start": "10:00", "end": "11:00" }
   ]
 }
 ```
 
-**`output/briefing_draft.md`** (Step 3 출력)
-- 슬랙 메시지 텍스트 (mrkdwn 형식)
-
-**`output/run_log.json`** (매 실행 누적)
+**`output/run_log.json`**
 ```json
 {
-  "timestamp": "2026-03-20T08:00:00+09:00",
+  "timestamp": "ISO8601+09:00",
   "status": "success | skipped | failed",
-  "reason": "page_not_found | todo_empty | slack_error | ...",
+  "reason": "all_sources_empty | llm_retry_exceeded | discord_error | notion_write_error | ...",
+  "sources_collected": ["todoist", "gcal"],
+  "sources_skipped": [],
   "todo_count": 5,
-  "retry_count": 0
+  "event_count": 2,
+  "notion_write_status": "success | skipped | appended",
+  "top3_items": ["태스크 A", "태스크 B", "태스크 C"],
+  "retry_count": 0,
+  "llm_model": "gemini-2.5-flash"
 }
 ```
 
-### 3-8. 스케줄러 설정 (참고)
+### 4-4. 분기 처리
 
-```bash
-# scheduler/run.sh
-# cron 예시: 매일 오전 8시 실행
-# 0 8 * * * /path/to/notion-slack-briefing/scheduler/run.sh
+| 상황 | 처리 |
+|------|------|
+| Todoist API 실패 | skip + 로그, GCal만으로 계속 |
+| GCal API 실패 | skip + 로그, Todoist만으로 계속 |
+| 2소스 모두 비어있음 | 빈 브리핑 Discord 발송 |
+| LLM 검증 2회 실패 | `merged_context.json` 원문 그대로 발송 |
+| Notion Morning 비어있음 | LLM 내용으로 채움 |
+| Notion Morning 내용 있음 | 구분선 + `🤖 LLM 제안` 헤딩으로 append |
+| Notion Write 실패 | skip + 로그, Discord 발송은 계속 진행 |
+| Discord 발송 실패 | 재시도 2회 → 에러 로그 + 에스컬레이션 |
 
-#!/bin/bash
-cd /path/to/notion-slack-briefing
-claude -p "CLAUDE.md에 따라 오늘의 브리핑 워크플로우를 실행해줘" --allowedTools "Bash,Read,Write"
+---
+
+## 5. LLM 브리핑 생성 원칙
+
+LLM은 `merged_context.json`을 받아 다음 원칙으로 브리핑을 생성한다:
+
+### Top 3 도출 방법
+1. **GCal 타임라인 먼저 파악** — 오늘의 고정 시간 블록 확인
+2. **시간 인접성 기준 배치** — 각 일정 직전/직후에 처리해야 할 Todoist 태스크를 묶음
+3. **Todoist 우선순위 반영** — 동일 시간대에 여러 태스크가 있으면 p1 우선
+4. **GCal 없는 경우** — Todoist p1 → p2 → p3 순서로 Top 3 선정
+
+### 2단 구조 원칙
+- **⭐ Top 3**: LLM이 위 기준으로 선정한 오늘의 집중 태스크 (GCal 컨텍스트 포함)
+- **📋 기타**: Top 3에 포함되지 않은 나머지 Todoist 태스크 (있을 때만 표시)
+- **💬 코멘트**: 1줄 동기부여 또는 하루 요약
+- **분량**: 500자 이내, Discord markdown 사용
+
+---
+
+## 6. 코드 마이그레이션 가이드 (v2.0 → v3.0)
+
+### 삭제
+```
+.claude/skills/notion-reader/          # 디렉토리 전체 삭제
+output/notion_raw.json                 # 더 이상 생성되지 않음
 ```
 
-> **대안**: GitHub Actions scheduled workflow로 실행 가능 (서버 없이 운영 시 권장)
+### 수정
+```
+main.py                                # Step 1b 제거, Step 5 Notion Write 삽입, Step 번호 정리
+briefing-generator/SKILL.md           # 이월 섹션 제거, 2단 구조로 업데이트
+briefing-generator/references/
+  message_format_guide.md             # 동일
+.github/workflows/daily_agent.yml    # UTC 23:00 확인 (KST→JST 동일)
+```
+
+### 신규 작성
+```
+.claude/skills/notion-writer/
+├── SKILL.md                          # notion-writer 스킬 정의
+└── scripts/write_notion_morning.py   # Morning 섹션 쓰기 로직
+```
 
 ---
 
-## 4. 미결 사항 (구현 전 확인 필요)
+## 7. GitHub 저장소
 
-| 항목 | 내용 | 결정 필요 시점 |
-|------|------|--------------|
-| 노션 DB 구조 | 일지 페이지의 날짜 필드명, 헤딩 이름 ("오늘 할 일" 등) 확인 | 구현 착수 전 |
-| 슬랙 발송 방식 | Incoming Webhook vs Bot Token (채널 지정 방식 차이) | 구현 착수 전 |
-| 할일 없을 때 처리 | 빈 브리핑 발송 vs 슬랙 발송 스킵 | 선호에 따라 결정 |
-| 실행 환경 | 로컬 cron vs GitHub Actions vs 서버 | 운영 환경에 따라 결정 |
+**저장소 이름**: `daily-productivity-master`
+
+### 이름 변경 체크리스트
+- [ ] GitHub Settings → Repository name 변경
+- [ ] 로컬: `git remote set-url origin https://github.com/유저명/daily-productivity-master.git`
+- [ ] `CLAUDE.md` 내 저장소 참조 업데이트 (있는 경우)
 
 ---
 
-*이 설계서는 Claude Code에서 CLAUDE.md, SKILL.md, 스크립트를 구현할 때 참조하는 계획서입니다.*
+## 8. 진화 방향 (로드맵)
+
+| 단계 | 내용 | 트리거 |
+|------|------|--------|
+| **v3.1** | Notion Night 섹션 요약 → 다음날 브리핑에 반영 | 저녁 회고를 꾸준히 쓰게 될 때 |
+| **v3.2** | Discord Bot 전환 — 커맨드로 할일 완료/추가 | 현재 Webhook의 단방향 한계를 느낄 때 |
+| **v4.0** | 주간 매크로 브리핑 — 월요일 아침에 주간 패턴 돌아보기 | run_log 데이터가 충분히 쌓인 후 |
+
+---
+
+*이 설계서는 Claude Code에서 CLAUDE.md, SKILL.md, 스크립트 구현 시 참조하는 계획서입니다.*

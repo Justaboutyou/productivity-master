@@ -1,11 +1,10 @@
-name: Daily Retrospective Agent
+name: Daily Briefing Agent
 
 on:
   schedule:
-    # Runs at 23:30 UTC which is 08:30 AM KST (next day) on weekdays
-    # (Update cron according to your preferred time)
-    - cron: '30 23 * * 0-4'
-  workflow_dispatch: # Allows manual triggering directly from github.com
+    # 매일 UTC 23:00 = JST 08:00
+    - cron: '0 23 * * *'
+  workflow_dispatch: # GitHub Actions 탭에서 수동 트리거 가능
 
 jobs:
   run-agent:
@@ -13,20 +12,24 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          
+
       - name: Install Dependencies
         run: |
           pip install -r requirements.txt
-          
+
       - name: Run Agent
         env:
+          TODOIST_API_KEY: ${{ secrets.TODOIST_API_KEY }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          GCAL_CLIENT_ID: ${{ secrets.GCAL_CLIENT_ID }}
+          GCAL_CLIENT_SECRET: ${{ secrets.GCAL_CLIENT_SECRET }}
+          GCAL_TOKEN_JSON: ${{ secrets.GCAL_TOKEN_JSON }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
