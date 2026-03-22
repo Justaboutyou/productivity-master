@@ -425,16 +425,21 @@ def make_empty_briefing(today: str) -> str:
     weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
     weekday = weekdays_ko[dt.weekday()]
     date_label = f"{dt.month:02d}/{dt.day:02d} {weekday}요일"
+    SEP = "──────────────────────────"
     return "\n".join([
-        "━━━━━━━━━━━━━━━━━━━━━━━",
-        f"  브리핑 · {date_label}",
-        "━━━━━━━━━━━━━━━━━━━━━━━",
+        SEP,
+        f"브리핑 · {date_label}",
+        SEP,
         "",
-        "오늘은 등록된 태스크와 일정이 없습니다.",
+        "💼 업무",
+        "  (없음)",
         "",
-        "━━━━━━━━━━━━━━━━━━━━━━━",
-        "  자유로운 하루! 😌",
-        "━━━━━━━━━━━━━━━━━━━━━━━",
+        "📚 자기계발",
+        "  (없음)",
+        "",
+        SEP,
+        '"오늘은 등록된 태스크와 일정이 없습니다. 자유로운 하루! 😌"',
+        SEP,
     ])
 
 
@@ -494,12 +499,16 @@ def main():
 
     client = genai.Client(api_key=gemini_api_key)
 
-    print("[Step 4] LLM 코멘트 생성 중...")
-    comment = generate_comment(client, merged)
+    # Step 4 — LLM ★ + 코멘트
+    gap_slots = calculate_gap_slots(merged["gcal_events"])
+    print("[Step 4] LLM ★ 판단 + 코멘트 생성 중...")
+    starred, comment = generate_stars_and_comment(client, merged, gap_slots)
+    print(f"[Step 4] ★ 태스크: {starred}")
     print(f"[Step 4] 코멘트: {comment}")
 
+    # Step 3 — 포맷 빌드
     print("[Step 3] 규칙 기반 브리핑 포맷 빌드 중...")
-    briefing = build_formatted_briefing(merged, comment)
+    briefing = build_formatted_briefing(merged, starred, comment)
 
     # 브리핑 저장
     BRIEFING_PATH.parent.mkdir(parents=True, exist_ok=True)
