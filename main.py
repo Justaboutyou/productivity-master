@@ -363,8 +363,12 @@ GCal 공백 슬롯: {gap_desc}
 JSON만 출력 (다른 텍스트 없이):
 {{"starred": ["태스크 텍스트1", "태스크 텍스트2"], "comment": "한 줄 코멘트"}}"""
 
-    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-    raw = response.text.strip()
+    try:
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        raw = response.text.strip()
+    except Exception as e:
+        print(f"[Step 4] LLM API 오류 (fallback): {e}", file=sys.stderr)
+        return [], ""
 
     # JSON 추출 (마크다운 코드블록 대응)
     match = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -529,6 +533,7 @@ def main():
         todo_count=todo_count,
         event_count=event_count,
         notion_write_status=notion_write_status,
+        starred_items=starred,
         comment=comment,
     ))
 
