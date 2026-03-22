@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -269,34 +270,86 @@ def build_formatted_briefing(merged: dict, comment: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Step 4 — LLM 한 줄 코멘트 생성
+# Step 4 — LLM ★ 판단 + 한 줄 코멘트 생성 (단일 호출)
 # ---------------------------------------------------------------------------
 
-def generate_comment(client: genai.Client, merged: dict) -> str:
+def generate_stars_and_comment(
+    client: genai.Client, merged: dict, gap_slots: list
+) -> tuple[list[str], str]:
+    """LLM에게 ★ 태스크 목록과 한 줄 코멘트를 JSON으로 받아 반환.
+
+    Returns:
+        (starred_texts, comment)
+        starred_texts: ★를 붙여야 하는 태스크 text 목록
+        comment: 한 줄 코멘트 문자열
+    """
     dt = date.fromisoformat(merged["date"])
     weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
     weekday = weekdays_ko[dt.weekday()]
-    tasks = [t for t in merged["todoist"] if t.get("root_project_name") != "간단일 리스트"]
-    p1_count = sum(1 for t in tasks if t.get("priority") == 1)
-    event_times = [e["start"] for e in merged["gcal_events"]]
+    today = merged["date"]
 
-    prompt = f"""오늘 브리핑 하단에 들어갈 한 줄 코멘트를 작성해줘.
+    work_tasks = [t for t in merged["todoist"] if classify_todoist_task(t) == "work"]
+    personal_tasks = [t for t in merged["todoist"] if classify_todoist_task(t) == "personal"]
 
-컨텍스트:
-- 오늘: {weekday}요일
-- GCal 일정: {len(event_times)}개 {event_times}
-- p1 태스크: {p1_count}개
-- 전체 태스크: {len(tasks)}개
+    def fmt_tasks(tasks: list) -> str:
+        if not tasks:
+            return "  (없음)"
+        return "\n".join(
+            f'  - "{t["text"]}" (p{t["priority"]}, due: {t.get("due_date", today)})'
+            for t in tasks
+        )
 
-규칙:
-- 한 줄, 30자 이내
-- 한국어, 친근하고 실용적
+    gap_desc = (
+        ", ".join(f"{g['start']}~{g['end']} ({g['minutes']}분)" for g in gap_slots)
+        if gap_slots else "없음"
+    )
+    longest = max(gap_slots, key=lambda g: g["minutes"]) if gap_slots else None
+    longest_desc = (
+        f"{longest['start']}~{longest['end']} ({longest['minutes']}분)"
+        if longest else "없음"
+    )
+    total_gap_min = sum(g["minutes"] for g in gap_slots)
+
+    prompt = f"""오늘 브리핑용 ★ 판단과 한 줄 코멘트를 JSON으로 반환해줘.
+
+오늘: {today} ({weekday}요일)
+GCal 공백 슬롯: {gap_desc}
+가장 긴 공백: {longest_desc}
+총 공백 시간: {total_gap_min}분
+
+[업무 태스크]
+{fmt_tasks(work_tasks)}
+
+[자기계발 태스크]
+{fmt_tasks(personal_tasks)}
+
+★ 판단 기준:
+- p1은 무조건 ★
+- p2 중 due date가 오늘({today})이면 ★
+- 총 공백 시간이 120분 미만인 날은 전체 ★를 2개 이하로 제한
+- 업무와 자기계발 각각 독립적으로 판단
+
+한 줄 코멘트 규칙:
+- 30자 이내, 한국어, 친근하고 실용적
 - 이모지 1개 포함
-- 매번 다른 표현
+- 가장 긴 공백 슬롯을 활용한 구체적 제안 포함
 
-한 줄 코멘트만 출력해줘."""
+JSON만 출력 (다른 텍스트 없이):
+{{"starred": ["태스크 텍스트1", "태스크 텍스트2"], "comment": "한 줄 코멘트"}}"""
+
     response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-    return response.text.strip()
+    raw = response.text.strip()
+
+    # JSON 추출 (마크다운 코드블록 대응)
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not match:
+        return [], raw  # fallback: 코멘트 전체를 텍스트로
+
+    try:
+        data = json.loads(match.group())
+        return data.get("starred", []), data.get("comment", "")
+    except json.JSONDecodeError:
+        return [], raw
 
 
 # ---------------------------------------------------------------------------
