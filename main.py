@@ -145,6 +145,42 @@ def run_step2(today: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 시간 유틸
+# ---------------------------------------------------------------------------
+
+def time_to_minutes(t: str) -> int:
+    """'HH:MM' → 분 단위 정수."""
+    h, m = t.split(":")
+    return int(h) * 60 + int(m)
+
+
+def format_gap(minutes: int) -> str:
+    """분 단위 공백 → '···  (Xh Xm 공백)' 문자열."""
+    if minutes < 60:
+        return f"···  ({minutes}m 공백)"
+    h = minutes // 60
+    m = minutes % 60
+    return f"···  ({h}h 공백)" if m == 0 else f"···  ({h}h {m}m 공백)"
+
+
+def calculate_gap_slots(events: list) -> list:
+    """이벤트 목록에서 30분 이상 공백 슬롯 목록 반환.
+    반환: [{"start": "HH:MM", "end": "HH:MM", "minutes": int}, ...]
+    """
+    if not events:
+        return []
+    sorted_evts = sorted(events, key=lambda e: e["start"])
+    gaps = []
+    for i in range(1, len(sorted_evts)):
+        prev_end = sorted_evts[i - 1]["end"]
+        curr_start = sorted_evts[i]["start"]
+        gap_min = time_to_minutes(curr_start) - time_to_minutes(prev_end)
+        if gap_min >= 30:
+            gaps.append({"start": prev_end, "end": curr_start, "minutes": gap_min})
+    return gaps
+
+
+# ---------------------------------------------------------------------------
 # Step 3 — 규칙 기반 분류 + 포맷 빌더
 # ---------------------------------------------------------------------------
 
