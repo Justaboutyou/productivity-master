@@ -71,7 +71,7 @@ def make_log_entry(status: str, reason: str = "", **kwargs) -> dict:
         "reason": reason,
         "llm_model": GEMINI_MODEL,
     }
-    entry.update(kwargs)
+    entry.update({k: v for k, v in kwargs.items() if v is not None})
     return entry
 
 
@@ -79,7 +79,7 @@ def make_log_entry(status: str, reason: str = "", **kwargs) -> dict:
 # Step 1a — Todoist 태스크 수집
 # ---------------------------------------------------------------------------
 
-def run_step1a() -> bool:
+def run_step1a() -> tuple[bool, str]:
     print("[Step 1a] Todoist 태스크 수집 중...")
     result = subprocess.run(
         [sys.executable, str(SCRIPTS["todoist"])],
@@ -88,16 +88,17 @@ def run_step1a() -> bool:
     )
     if result.returncode == 0:
         print(f"[Step 1a] {result.stdout.strip()}")
-        return True
-    print(f"[Step 1a] 실패 (skip): {result.stderr.strip()}", file=sys.stderr)
-    return False
+        return True, ""
+    err = result.stderr.strip()
+    print(f"[Step 1a] 실패 (skip): {err}", file=sys.stderr)
+    return False, err
 
 
 # ---------------------------------------------------------------------------
 # Step 1b — GCal 일정 수집
 # ---------------------------------------------------------------------------
 
-def run_step1b() -> bool:
+def run_step1b() -> tuple[bool, str]:
     print("[Step 1b] GCal 일정 수집 중...")
     result = subprocess.run(
         [sys.executable, str(SCRIPTS["gcal"])],
@@ -106,9 +107,10 @@ def run_step1b() -> bool:
     )
     if result.returncode == 0:
         print(f"[Step 1b] {result.stdout.strip()}")
-        return True
-    print(f"[Step 1b] 실패 (skip): {result.stderr.strip()}", file=sys.stderr)
-    return False
+        return True, ""
+    err = result.stderr.strip()
+    print(f"[Step 1b] 실패 (skip): {err}", file=sys.stderr)
+    return False, err
 
 
 # ---------------------------------------------------------------------------
@@ -393,19 +395,26 @@ def main():
     today = date.today().isoformat()
     sources_collected = []
     sources_skipped = []
+    skip_errors: dict[str, str] = {}
     notion_write_status = "skipped"
 
     # Step 1a — Todoist
-    if run_step1a():
+    ok, err = run_step1a()
+    if ok:
         sources_collected.append("todoist")
     else:
         sources_skipped.append("todoist")
+        if err:
+            skip_errors["todoist"] = err
 
     # Step 1b — GCal
-    if run_step1b():
+    ok, err = run_step1b()
+    if ok:
         sources_collected.append("gcal")
     else:
         sources_skipped.append("gcal")
+        if err:
+            skip_errors["gcal"] = err
 
     # Step 2 — 병합
     merged = run_step2(today)
@@ -424,6 +433,7 @@ def main():
             reason="all_sources_empty",
             sources_collected=sources_collected,
             sources_skipped=sources_skipped,
+            skip_errors=skip_errors or None,
             todo_count=0,
             event_count=0,
             notion_write_status=notion_write_status,
@@ -467,6 +477,7 @@ def main():
         reason="" if success else "discord_error",
         sources_collected=sources_collected,
         sources_skipped=sources_skipped,
+        skip_errors=skip_errors or None,
         todo_count=todo_count,
         event_count=event_count,
         notion_write_status=notion_write_status,
