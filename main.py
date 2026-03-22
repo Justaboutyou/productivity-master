@@ -175,7 +175,7 @@ def classify_todoist_task(task: dict) -> str:
 
 
 def render_events(events: list) -> list[str]:
-    return [f"  {e['start']} - {e['end']}  {e['title']}" for e in events]
+    return [f"  {e['start']}~{e['end']}  {e['title']}" for e in events]
 
 
 def build_formatted_briefing(merged: dict, starred: list[str], comment: str) -> str:
