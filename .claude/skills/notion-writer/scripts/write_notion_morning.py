@@ -2,6 +2,7 @@
 Step 5: Notion Morning 섹션 채우기
 
 Notion REST API를 직접 호출 (notion-client v3 호환성 문제 우회).
+브리핑 전체 텍스트를 Morning 섹션에 paragraph 블록으로 기록.
 Night 섹션은 절대 건드리지 않음.
 
 Exit codes:
@@ -63,28 +64,6 @@ def notion_patch(path: str, body: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 브리핑 파싱
-# ---------------------------------------------------------------------------
-
-def parse_briefing(text: str) -> tuple[list[str], list[str]]:
-    top3, brain_dump = [], []
-    section = None
-    for line in text.split("\n"):
-        line = line.strip()
-        if "⭐ 오늘의 Top 3" in line:
-            section = "top3"
-        elif "📋 기타" in line:
-            section = "brain_dump"
-        elif "💬" in line or "🌅" in line:
-            section = None
-        elif line.startswith("•") and section == "top3":
-            top3.append(line[1:].strip())
-        elif line.startswith("•") and section == "brain_dump":
-            brain_dump.append(line[1:].strip())
-    return top3, brain_dump
-
-
-# ---------------------------------------------------------------------------
 # 블록 빌더
 # ---------------------------------------------------------------------------
 
@@ -107,11 +86,10 @@ def divider() -> dict:
     return {"object": "block", "type": "divider", "divider": {}}
 
 
-def morning_content_blocks(top3: list[str], brain_dump: list[str]) -> list[dict]:
-    blocks = [heading3("1️⃣ Top Priorities 3")]
-    blocks += [para(item) for item in top3] if top3 else [para("(없음)")]
-    blocks += [heading3("2️⃣ Brain Dump")]
-    blocks += [para(item) for item in brain_dump] if brain_dump else [para("(없음)")]
+def briefing_to_blocks(text: str) -> list[dict]:
+    blocks = []
+    for line in text.split("\n"):
+        blocks.append(para(line) if line.strip() else para(" "))
     return blocks
 
 
@@ -133,10 +111,10 @@ def find_today_page() -> Optional[str]:
     return results[0]["id"] if results else None
 
 
-def create_today_page(top3: list[str], brain_dump: list[str]) -> str:
+def create_today_page(briefing_text: str) -> str:
     children = (
         [heading2("☀️ Morning: 오늘 하루를 어떻게 보낼까요?")]
-        + morning_content_blocks(top3, brain_dump)
+        + briefing_to_blocks(briefing_text)
         + [
             heading2("🌙 Night: 성찰과 감사 (오늘 하루는 어땠나요?)"),
             para("• 오늘 내가 잘한 것 1가지는?"),
@@ -175,7 +153,7 @@ def get_plain_text(block: dict) -> str:
     return "".join(rt.get("plain_text", "") for rt in block.get(btype, {}).get("rich_text", []))
 
 
-def write_morning_section(page_id: str, top3: list[str], brain_dump: list[str]) -> str:
+def write_morning_section(page_id: str, briefing_text: str) -> str:
     blocks = get_page_blocks(page_id)
 
     morning_heading_id = None
@@ -194,7 +172,7 @@ def write_morning_section(page_id: str, top3: list[str], brain_dump: list[str]) 
                 break
             morning_content_ids.append(block["id"])
 
-    new_blocks = morning_content_blocks(top3, brain_dump)
+    new_blocks = briefing_to_blocks(briefing_text)
 
     if morning_content_ids:
         # 내용 있음 → 구분선 + LLM 제안으로 append
@@ -225,15 +203,15 @@ def main():
         print(f"Briefing not found: {BRIEFING_PATH}", file=sys.stderr)
         sys.exit(1)
 
-    top3, brain_dump = parse_briefing(BRIEFING_PATH.read_text())
+    briefing_text = BRIEFING_PATH.read_text()
 
     try:
         page_id = find_today_page()
         if page_id is None:
-            create_today_page(top3, brain_dump)
+            create_today_page(briefing_text)
             print(f"Created new Notion page: {today_title()}")
         else:
-            result = write_morning_section(page_id, top3, brain_dump)
+            result = write_morning_section(page_id, briefing_text)
             print(f"Updated Notion page Morning section ({result}): {today_title()}")
     except Exception as e:
         print(f"Notion API error: {e}", file=sys.stderr)

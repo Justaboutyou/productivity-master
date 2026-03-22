@@ -26,9 +26,29 @@ JST = timezone(timedelta(hours=9))
 PRIORITY_MAP = {4: 1, 3: 2, 2: 3, 1: 4}
 
 
+def fetch_projects(headers: dict) -> dict:
+    resp = requests.get("https://api.todoist.com/api/v1/projects", headers=headers, timeout=10)
+    resp.raise_for_status()
+    return {p["id"]: p for p in resp.json().get("results", [])}
+
+
+def get_root_project_name(project_id: str, project_map: dict) -> str:
+    visited = set()
+    while project_id and project_id not in visited:
+        visited.add(project_id)
+        proj = project_map.get(project_id, {})
+        parent_id = proj.get("parent_id")
+        if not parent_id:
+            return proj.get("name", "")
+        project_id = parent_id
+    return ""
+
+
 def fetch_todoist_tasks() -> list:
     today = date.today().isoformat()
     headers = {"Authorization": f"Bearer {TODOIST_API_KEY}"}
+
+    project_map = fetch_projects(headers)
 
     # 새 API v1: pagination은 next_cursor로 처리
     all_tasks = []
@@ -81,10 +101,16 @@ def fetch_todoist_tasks() -> list:
         raw_priority = task.get("priority", 1)
         priority = PRIORITY_MAP.get(raw_priority, raw_priority)
 
+        project_id = task.get("project_id", "")
+        project_name = project_map.get(project_id, {}).get("name", "") if project_id else ""
+        root_project_name = get_root_project_name(project_id, project_map) if project_id else ""
+
         result.append({
             "text": task.get("content", ""),
             "priority": priority,
             "due_time": due_time,
+            "project_name": project_name,
+            "root_project_name": root_project_name,
         })
 
     return result
