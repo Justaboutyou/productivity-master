@@ -6,11 +6,10 @@ Exit codes:
   1 - 발송 실패 (2회 재시도 후)
 """
 
-import json
+import argparse
 import os
 import sys
 import time
-from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import requests
@@ -19,11 +18,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-BRIEFING_PATH = Path(__file__).parents[4] / "output" / "briefing_draft.md"
-RUN_LOG_PATH = Path(__file__).parents[4] / "output" / "run_log.json"
+DEFAULT_BRIEFING_PATH = Path(__file__).parents[4] / "output" / "briefing_draft.md"
 
 MAX_RETRIES = 2
-KST = timezone(timedelta(hours=9))
 
 
 def send_message(text: str) -> bool:
@@ -50,15 +47,20 @@ def send_message(text: str) -> bool:
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--file", type=Path, default=DEFAULT_BRIEFING_PATH,
+                        help="발송할 메시지 파일 경로 (기본: output/briefing_draft.md)")
+    args = parser.parse_args()
+
     if not DISCORD_WEBHOOK_URL:
         print("Missing DISCORD_WEBHOOK_URL", file=sys.stderr)
         sys.exit(1)
 
-    if not BRIEFING_PATH.exists():
-        print(f"Briefing file not found: {BRIEFING_PATH}", file=sys.stderr)
+    if not args.file.exists():
+        print(f"Briefing file not found: {args.file}", file=sys.stderr)
         sys.exit(1)
 
-    message = BRIEFING_PATH.read_text().strip()
+    message = args.file.read_text().strip()
     success = send_message(message)
 
     if not success:

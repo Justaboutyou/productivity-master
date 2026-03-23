@@ -45,7 +45,7 @@ def get_root_project_name(project_id: str, project_map: dict) -> str:
 
 
 def fetch_todoist_tasks() -> list:
-    today = date.today().isoformat()
+    today = datetime.now(JST).date().isoformat()
     headers = {"Authorization": f"Bearer {TODOIST_API_KEY}"}
 
     project_map = fetch_projects(headers)
@@ -106,6 +106,7 @@ def fetch_todoist_tasks() -> list:
         root_project_name = get_root_project_name(project_id, project_map) if project_id else ""
 
         result.append({
+            "id": task.get("id", ""),
             "text": task.get("content", ""),
             "priority": priority,
             "due_date": due_date,
@@ -128,7 +129,7 @@ def main():
         print(f"Todoist API error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    today = date.today().isoformat()
+    today = datetime.now(JST).date().isoformat()
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(json.dumps({"date": today, "tasks": tasks}, ensure_ascii=False, indent=2))
     print(f"Fetched {len(tasks)} tasks")

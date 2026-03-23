@@ -55,7 +55,7 @@ def fetch_gcal_events() -> list:
     creds = load_credentials()
     service = build("calendar", "v3", credentials=creds)
 
-    today = date.today()
+    today = datetime.now(JST).date()
     time_min = datetime(today.year, today.month, today.day, 0, 0, 0, tzinfo=JST).isoformat()
     time_max = datetime(today.year, today.month, today.day, 23, 59, 59, tzinfo=JST).isoformat()
 
@@ -111,7 +111,7 @@ def main():
         print(f"GCal API error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    today = date.today().isoformat()
+    today = datetime.now(JST).date().isoformat()
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(json.dumps({"date": today, "events": events}, ensure_ascii=False, indent=2))
     print(f"Fetched {len(events)} events")

@@ -30,15 +30,21 @@ load_dotenv()
 BASE_DIR = Path(__file__).parent
 SCRIPTS = {
     "todoist": BASE_DIR / ".claude/skills/todoist-reader/scripts/fetch_todoist_tasks.py",
+    "todoist_completed": BASE_DIR / ".claude/skills/todoist-reader/scripts/fetch_todoist_completed.py",
     "gcal": BASE_DIR / ".claude/skills/gcal-reader/scripts/fetch_gcal_events.py",
     "notion_write": BASE_DIR / ".claude/skills/notion-writer/scripts/write_notion_morning.py",
+    "notion_night": BASE_DIR / ".claude/skills/notion-writer/scripts/write_notion_night.py",
     "discord": BASE_DIR / ".claude/skills/discord-sender/scripts/send_discord_message.py",
 }
 TODOIST_RAW_PATH = BASE_DIR / "output" / "todoist_raw.json"
+TODOIST_COMPLETED_PATH = BASE_DIR / "output" / "todoist_completed.json"
 GCAL_RAW_PATH = BASE_DIR / "output" / "gcal_raw.json"
 MERGED_PATH = BASE_DIR / "output" / "merged_context.json"
 BRIEFING_PATH = BASE_DIR / "output" / "briefing_draft.md"
+NIGHT_DRAFT_PATH = BASE_DIR / "output" / "night_draft.md"
 RUN_LOG_PATH = BASE_DIR / "output" / "run_log.json"
+
+LONG_DELAY_THRESHOLD_DAYS = 7
 
 KST = timezone(timedelta(hours=9))
 GEMINI_MODEL = "gemini-2.0-flash"
@@ -64,9 +70,10 @@ def append_run_log(entry: dict):
     RUN_LOG_PATH.write_text(json.dumps(logs, ensure_ascii=False, indent=2))
 
 
-def make_log_entry(status: str, reason: str = "", **kwargs) -> dict:
+def make_log_entry(status: str, reason: str = "", mode: str = "morning", **kwargs) -> dict:
     entry = {
         "timestamp": datetime.now(KST).isoformat(),
+        "mode": mode,
         "status": status,
         "reason": reason,
         "llm_model": GEMINI_MODEL,
@@ -388,11 +395,293 @@ def make_empty_briefing(today: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Night Mode — Step N2: 완료 태스크 수집
+# ---------------------------------------------------------------------------
+
+def run_step_n2() -> tuple[bool, str]:
+    print("[Night N2] Todoist 완료 태스크 수집 중...")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS["todoist_completed"])],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode in (0, 2):  # 2 = skip (아침 데이터 없음)
+        print(f"[Night N2] {result.stdout.strip() or result.stderr.strip()}")
+        return result.returncode == 0, ""
+    err = result.stderr.strip()
+    print(f"[Night N2] 실패 (skip): {err}", file=sys.stderr)
+    return False, err
+
+
+# ---------------------------------------------------------------------------
+# Night Mode — Step N4: LLM 제언 생성
+# ---------------------------------------------------------------------------
+
+def generate_night_advice(
+    client: genai.Client, incomplete: list, long_delayed: list, done: int, total: int
+) -> tuple[list, list, str]:
+    """LLM에게 미완료/장기지연 제언 + 한 줄 코멘트를 JSON으로 받아 반환.
+
+    Returns:
+        (incomplete_advice, delayed_advice, comment)
+        incomplete_advice: [{"task": str, "advice": str}, ...]
+        delayed_advice:    [{"task": str, "days": int, "advice": str}, ...]
+        comment: 한 줄 코멘트
+    """
+    def fmt_tasks(tasks: list) -> str:
+        if not tasks:
+            return "  (없음)"
+        return "\n".join(f'  - "{t["text"]}" (p{t["priority"]})' for t in tasks)
+
+    def fmt_delayed(tasks: list) -> str:
+        if not tasks:
+            return "  (없음)"
+        return "\n".join(
+            f'  - "{t["text"]}" ({t["overdue_days"]}일 경과, p{t["priority"]})' for t in tasks
+        )
+
+    prompt = f"""오늘 하루 결산 제언을 JSON으로 반환해줘.
+
+완료: {done}/{total}개
+
+[오늘 미완료]
+{fmt_tasks(incomplete)}
+
+[7일 이상 미뤄온 태스크]
+{fmt_delayed(long_delayed)}
+
+제언 기준:
+- 미완료: 내일 어떻게 처리할지 (재시도/쪼개기/재검토 중 하나, 15자 이내)
+- 7일+: 삭제/재지정/쪼개기 중 하나 (15자 이내)
+- 한 줄 코멘트: 20자 이내, 이모지 1개, 한국어
+
+JSON만 출력 (다른 텍스트 없이):
+{{"incomplete_advice": [{{"task": "태스크명", "advice": "제언"}}], "delayed_advice": [{{"task": "태스크명", "days": 숫자, "advice": "제언"}}], "comment": "한 줄 코멘트"}}"""
+
+    try:
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        raw = response.text.strip()
+    except Exception as e:
+        print(f"[Night N4] LLM API 오류 (fallback): {e}", file=sys.stderr)
+        return [], [], ""
+
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not match:
+        return [], [], raw
+
+    try:
+        data = json.loads(match.group())
+        return (
+            data.get("incomplete_advice", []),
+            data.get("delayed_advice", []),
+            data.get("comment", ""),
+        )
+    except json.JSONDecodeError:
+        return [], [], raw
+
+
+# ---------------------------------------------------------------------------
+# Night Mode — 나이트 브리핑 포맷 빌드
+# ---------------------------------------------------------------------------
+
+def build_night_briefing(
+    merged: dict,
+    completed: list,
+    incomplete: list,
+    incomplete_advice: list,
+    long_delayed: list,
+    delayed_advice: list,
+    comment: str,
+) -> str:
+    dt = date.fromisoformat(merged["date"])
+    weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
+    weekday = weekdays_ko[dt.weekday()]
+    date_label = f"{dt.month:02d}/{dt.day:02d} {weekday}요일"
+
+    total = len(merged["todoist"])
+    done = len(completed)
+    pct = int(done / total * 100) if total else 0
+
+    SEP = "──────────────────────────"
+    lines: list[str] = [SEP, f"결산 · {date_label}", SEP, ""]
+
+    # ── 완료 요약 ──
+    lines.append(f"📊 {done} / {total} 완료 ({pct}%)")
+    if completed:
+        names = ", ".join(t["text"] for t in completed[:3])
+        suffix = f" 외 {done - 3}건" if done > 3 else ""
+        lines += [f"   완료: {names}{suffix}", ""]
+    else:
+        lines += ["", ""]
+
+    # ── 미완료 제언 ──
+    if incomplete_advice:
+        lines.append("⏳ 내일 이어서")
+        advice_map = {a["task"]: a["advice"] for a in incomplete_advice}
+        for t in incomplete:
+            adv = advice_map.get(t["text"], "내일 재시도")
+            lines.append(f"  • {t['text']} → {adv}")
+        lines.append("")
+
+    # ── 장기 지연 제언 ──
+    if delayed_advice:
+        lines.append("🗂️ 오래 미뤄온 것 (7일+)")
+        advice_map = {a["task"]: (a["advice"], a.get("days", 0)) for a in delayed_advice}
+        for t in long_delayed:
+            adv, days = advice_map.get(t["text"], ("재검토 필요", t["overdue_days"]))
+            lines.append(f"  • {t['text']} ({days}일째) → {adv}")
+        lines.append("")
+
+    # ── LLM 코멘트 ──
+    if comment:
+        lines += [SEP, f'"{comment}"', SEP]
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Night Mode — Step N5: Notion 저녁 제언 섹션
+# ---------------------------------------------------------------------------
+
+def run_step_n5() -> str:
+    print("[Night N5] Notion AI 저녁 제언 섹션 채우기 중...")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS["notion_night"])],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print(f"[Night N5] {result.stdout.strip()}")
+        return "appended" if "appended" in result.stdout else "success"
+    print(f"[Night N5] 실패 (skip): {result.stderr.strip()}", file=sys.stderr)
+    return "skipped"
+
+
+# ---------------------------------------------------------------------------
+# Night Mode — Step N6: Discord 발송
+# ---------------------------------------------------------------------------
+
+def run_step_n6() -> bool:
+    print("[Night N6] Discord 나이트 발송 중...")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS["discord"]), "--file", str(NIGHT_DRAFT_PATH)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print("[Night N6] 발송 성공 ✓")
+        return True
+    print(f"[Night N6] 발송 실패: {result.stderr.strip()}", file=sys.stderr)
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Night Mode — 오케스트레이터
+# ---------------------------------------------------------------------------
+
+def run_night_mode():
+    today = datetime.now(KST).date().isoformat()
+    today_dt = datetime.now(KST).date()
+    notion_write_status = "skipped"
+
+    print(f"[Night] 나이트 라운드 시작: {today}")
+
+    # Step N1 — 아침 merged_context 로드 (재수집 없음)
+    print("[Night N1] 아침 merged_context.json 로드 중...")
+    if not MERGED_PATH.exists():
+        print("[Night N1] 아침 데이터 없음 — 빈 결산 발송")
+        NIGHT_DRAFT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        NIGHT_DRAFT_PATH.write_text("오늘 아침 데이터가 없어 결산을 생성할 수 없습니다.")
+        run_step_n6()
+        return
+
+    merged = json.loads(MERGED_PATH.read_text())
+    morning_tasks = merged.get("todoist", [])
+    print(f"[Night N1] 아침 계획: {len(morning_tasks)}개 태스크")
+
+    # Step N2 — 완료 태스크 수집
+    run_step_n2()
+    completed: list = []
+    if TODOIST_COMPLETED_PATH.exists():
+        try:
+            completed = json.loads(TODOIST_COMPLETED_PATH.read_text()).get("tasks", [])
+        except json.JSONDecodeError:
+            pass
+
+    # Step N3 — Python pre-compute
+    completed_ids = {t["id"] for t in completed if t.get("id")}
+    incomplete = [t for t in morning_tasks if t.get("id") and t["id"] not in completed_ids]
+
+    long_delayed = []
+    for t in morning_tasks:
+        due = t.get("due_date", "")
+        if not due:
+            continue
+        try:
+            overdue_days = (today_dt - date.fromisoformat(due)).days
+        except ValueError:
+            continue
+        if overdue_days >= LONG_DELAY_THRESHOLD_DAYS:
+            long_delayed.append({**t, "overdue_days": overdue_days})
+
+    print(f"[Night N3] 미완료: {len(incomplete)}개 / 장기 지연: {len(long_delayed)}개")
+
+    # Step N4 — LLM 제언 생성
+    gemini_api_key = os.environ.get("GEMINI_API_KEY")
+    if not gemini_api_key:
+        print("Missing GEMINI_API_KEY", file=sys.stderr)
+        sys.exit(1)
+
+    client = genai.Client(api_key=gemini_api_key)
+    print("[Night N4] LLM 제언 생성 중...")
+    incomplete_advice, delayed_advice, comment = generate_night_advice(
+        client, incomplete, long_delayed, len(completed), len(morning_tasks)
+    )
+    print(f"[Night N4] 코멘트: {comment}")
+
+    # 나이트 브리핑 저장
+    night_briefing = build_night_briefing(
+        merged, completed, incomplete,
+        incomplete_advice, long_delayed, delayed_advice, comment
+    )
+    NIGHT_DRAFT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    NIGHT_DRAFT_PATH.write_text(night_briefing)
+    print("[Night N4] 나이트 브리핑 저장 완료")
+
+    # Step N5 — Notion 저녁 제언
+    notion_write_status = run_step_n5()
+
+    # Step N6 — Discord
+    success = run_step_n6()
+
+    append_run_log(make_log_entry(
+        status="success" if success else "failed",
+        reason="" if success else "discord_error",
+        mode="night",
+        todo_count=len(morning_tasks),
+        completed_count=len(completed),
+        incomplete_count=len(incomplete),
+        long_delayed_count=len(long_delayed),
+        notion_write_status=notion_write_status,
+        comment=comment,
+    ))
+
+    if not success:
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # 메인
 # ---------------------------------------------------------------------------
 
 def main():
-    today = date.today().isoformat()
+    if "--mode" in sys.argv:
+        idx = sys.argv.index("--mode")
+        if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "night":
+            run_night_mode()
+            return
+
+    today = datetime.now(KST).date().isoformat()
     sources_collected = []
     sources_skipped = []
     skip_errors: dict[str, str] = {}

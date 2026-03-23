@@ -50,67 +50,92 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Todoist API: REST v2 (`TODOIST_API_KEY`)
 - Notion API: REST (`NOTION_TOKEN`, `NOTION_DATABASE_ID`)
 - Google Calendar API: REST (`GCAL_CLIENT_ID`, `GCAL_CLIENT_SECRET`, `GCAL_TOKEN_JSON` — OAuth2, token.json base64 인코딩)
-- LLM: Gemini `gemini-2.5-flash` (`GEMINI_API_KEY`) — Free tier, 매일 1회 실행으로 Rate limit 무관
+- LLM: Gemini `gemini-2.0-flash` (`GEMINI_API_KEY`) — Free tier (1,500회/일 무료), 매일 2회 실행으로 Rate limit 무관
 - Discord: Incoming Webhook (`DISCORD_WEBHOOK_URL`)
 
 ### 폴더 구조
 ```
 /
-├── main.py                                          # 진입점 — 6단계 오케스트레이터
+├── main.py                                          # 진입점 — 모닝/나이트 모드 오케스트레이터 (--mode morning|night)
 ├── requirements.txt
 ├── CLAUDE.md
 ├── .claude/skills/
 │   ├── todoist-reader/
 │   │   ├── SKILL.md
 │   │   └── scripts/
-│   │       └── fetch_todoist_tasks.py               # Step 1a: Todoist 오늘 태스크
+│   │       ├── fetch_todoist_tasks.py               # Step 1a: Todoist 오늘 태스크 (id 포함)
+│   │       └── fetch_todoist_completed.py           # Step N2: 아침 계획 vs active 비교로 완료 역산
 │   ├── gcal-reader/
 │   │   ├── SKILL.md
 │   │   └── scripts/
 │   │       └── fetch_gcal_events.py                 # Step 1b: Google Calendar 오늘 일정
-│   ├── notion-writer/                               # Step 5: Notion Morning 섹션 채우기
+│   ├── notion-writer/
 │   │   ├── SKILL.md
 │   │   └── scripts/
-│   │       └── write_notion_morning.py
+│   │       ├── write_notion_morning.py              # Step 5: Notion Morning 섹션 채우기
+│   │       └── write_notion_night.py                # Step N5: Notion AI 저녁 제언 섹션 삽입
 │   ├── briefing-generator/
 │   │   ├── SKILL.md
 │   │   └── references/message_format_guide.md       # Step 3, 4: LLM 프롬프트 지침
 │   └── discord-sender/
 │       ├── SKILL.md
-│       └── scripts/send_discord_message.py          # Step 6: Discord POST
+│       └── scripts/send_discord_message.py          # Step 6/N6: Discord POST (--file 인자 지원)
 ├── output/
 │   ├── todoist_raw.json         # Step 1a 산출물
+│   ├── todoist_completed.json   # Step N2 산출물 (나이트 모드)
 │   ├── gcal_raw.json            # Step 1b 산출물
 │   ├── merged_context.json      # Step 2 산출물
-│   ├── briefing_draft.md        # Step 3 산출물
-│   └── run_log.json             # 실행 이력 (append-only)
+│   ├── briefing_draft.md        # Step 3 산출물 (모닝 브리핑)
+│   ├── night_draft.md           # Step N4 산출물 (나이트 결산)
+│   └── run_log.json             # 실행 이력 (append-only, mode 필드 포함)
 └── .github/workflows/daily_agent.yml
 ```
 
 ### 에이전트 구조
 
-**단일 오케스트레이터** — `main.py`가 6단계를 순서대로 실행한다. Step 1의 2개 수집 스크립트는 독립적이므로 병렬 실행 가능하나, 초기 구현은 순차로 한다.
+**단일 오케스트레이터** — `main.py --mode morning|night` 으로 모드를 분기한다. GitHub Actions가 UTC 시각으로 모드를 자동 판별해 전달한다.
+
+#### 모닝 모드 (JST 07:30 목표, UTC 22:30 실행)
 
 | 단계 | 처리 방식 | 스킬 |
 |------|-----------|------|
-| Step 1a — Todoist 태스크 수집 | Python 스크립트 | `todoist-reader` |
+| Step 1a — Todoist 오늘 태스크 수집 | Python 스크립트 | `todoist-reader` |
 | Step 1b — Google Calendar 오늘 일정 수집 | Python 스크립트 | `gcal-reader` |
 | Step 2 — 2소스 병합 | Python 스크립트 | (inline in main.py) |
-| Step 3 — LLM 브리핑 생성 | LLM 판단 | `briefing-generator` |
-| Step 4 — LLM 자기 검증 | LLM 판단 | `briefing-generator` |
-| Step 5 — Notion Write | Python 스크립트 | `notion-writer` |
-| Step 6 — Discord 발송 | Python 스크립트 | `discord-sender` |
+| Step 3 — 규칙 기반 브리핑 포맷 빌드 | Python 스크립트 | (inline in main.py) |
+| Step 4 — LLM ★ 판단 + 한 줄 코멘트 생성 | LLM (Gemini) | (inline in main.py) |
+| Step 5 — Notion Morning 섹션 채우기 | Python 스크립트 | `notion-writer` |
+| Step 6 — Discord 모닝 브리핑 발송 | Python 스크립트 | `discord-sender` |
+
+#### 나이트 모드 (JST 20:30 목표, UTC 11:30 실행)
+
+| 단계 | 처리 방식 | 스킬 |
+|------|-----------|------|
+| Step N1 — 아침 merged_context.json 로드 | 파일 읽기 | (재수집 없음, API 비용 0) |
+| Step N2 — Todoist 완료 태스크 역산 | Python 스크립트 | `todoist-reader` |
+| Step N3 — 미완료 / 장기 지연(7일+) 분류 | Python 스크립트 | (inline in main.py) |
+| Step N4 — LLM 제언 + 코멘트 생성 | LLM (Gemini) | (inline in main.py) |
+| Step N5 — Notion AI 저녁 제언 섹션 삽입 | Python 스크립트 | `notion-writer` |
+| Step N6 — Discord 나이트 결산 발송 | Python 스크립트 | `discord-sender` |
 
 ### 단계 간 데이터 흐름
 
+#### 모닝 모드
 | 전달 | 방식 | 경로 |
 |------|------|------|
 | Step 1a → Step 2 | 파일 | `output/todoist_raw.json` |
 | Step 1b → Step 2 | 파일 | `output/gcal_raw.json` |
 | Step 2 → Step 3 | 파일 | `output/merged_context.json` |
-| Step 3 → Step 4 | 인라인 프롬프트 | (메시지가 짧으므로 인라인) |
-| Step 4 → Step 5 | 파일 | `output/briefing_draft.md` |
+| Step 3/4 → Step 5 | 파일 | `output/briefing_draft.md` |
 | Step 5 → Step 6 | 파일 | `output/briefing_draft.md` (동일 파일) |
+
+#### 나이트 모드
+| 전달 | 방식 | 경로 |
+|------|------|------|
+| Step N1 (아침 계획 재사용) | 파일 | `output/merged_context.json` |
+| Step N2 → Step N3 | 파일 | `output/todoist_completed.json` |
+| Step N4 → Step N5 | 파일 | `output/night_draft.md` |
+| Step N5 → Step N6 | 파일 | `output/night_draft.md` (동일 파일) |
 
 ---
 
@@ -123,44 +148,76 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | **Todoist 태스크** | 오늘 due date가 설정된 Todoist 항목. priority 1~4 포함 |
 | **GCal 일정** | 오늘 날짜의 Google Calendar 이벤트. 시작·종료 시간 및 제목 포함 |
 | **브리핑 메시지** | LLM이 2소스를 통합해 생성한 Discord 메시지 (2단 구조, Discord markdown, ≤500자) |
-| **Top 3** | LLM이 Todoist + GCal 기반으로 도출한 오늘의 집중 태스크 3개 (GCal 시간 인접성 기준) |
+| **★ 태스크** | LLM이 오늘 집중해야 할 태스크에 부여하는 표시. p1 무조건, 오늘 due p2도 해당 |
 | **Morning 섹션** | Notion 일지 페이지의 Top Priorities 3 + Brain Dump 영역 — LLM이 자동 채움 |
 | **Night 섹션** | Notion 일지 페이지의 성찰과 감사 영역 — 사람이 직접 작성, 시스템이 절대 건드리지 않음 |
+| **AI 저녁 제언 섹션** | Notion 일지 페이지의 Night 헤딩 직전에 자동 삽입 — 완료 요약 + 미완료 제언 + 장기 지연 제언 |
 
-### 브리핑 메시지 포맷 원칙
+### 모닝 브리핑 포맷 원칙
 
-LLM은 `merged_context.json`을 입력받아 **2단 구조**로 브리핑을 생성한다:
+Python 규칙 기반으로 섹션을 빌드하고, LLM은 ★ 판단 + 한 줄 코멘트만 담당한다:
 
 ```
-🌅 오늘의 브리핑 (MM/DD 요일)
+──────────────────────────
+브리핑 · MM/DD 요일
+──────────────────────────
 
-⭐ 오늘의 Top 3
-• GCal 일정 컨텍스트 → 태스크 (Todoist p1)
-• ...
+💼 일정 (업무)          ← 평일만, GCal 업무 이벤트
+  HH:MM~HH:MM  이벤트명
 
-📋 기타
-• Top 3에 포함되지 않은 나머지 Todoist 태스크
+🌙 일정 (개인)          ← GCal 개인 이벤트
+  HH:MM~HH:MM  이벤트명
 
-💬 한 줄 코멘트
+💼 업무                 ← root_project = 業務リスト
+  태스크명  ★           ← p1 또는 오늘 due p2에 LLM이 ★ 부여
+
+📚 자기계발             ← root_project = 자기계발
+  태스크명
+
+📦 백로그               ← root_project = 간단일 리스트 (항목 있을 때만)
+  태스크A · 태스크B
+
+──────────────────────────
+"LLM 한 줄 코멘트 (30자 이내, 이모지 1개)"
+──────────────────────────
 ```
 
-**Top 3 도출 기준 (LLM 판단)**:
-1. GCal 일정이 있는 시간대와 **시간적으로 인접한** Todoist 태스크를 우선 배치
-2. 동일 시간대에 여러 태스크가 있으면 Todoist 우선순위(p1 > p2 > ...) 적용
-3. GCal 일정이 없는 경우 Todoist p1 → p2 → p3 순서로 Top 3 선정
+**★ 판단 기준 (LLM)**:
+- p1은 무조건 ★
+- p2 중 due_date가 오늘인 경우 ★
+- 업무/자기계발 각각 독립 판단
 
-**기타 원칙**:
-- 기타 섹션은 항목이 있을 때만 표시
-- **분량**: 500자 이하, Discord markdown 사용
+### 나이트 결산 포맷 원칙
+
+```
+──────────────────────────
+결산 · MM/DD 요일
+──────────────────────────
+
+📊 완료 / 계획 (완료율%)
+   완료: 태스크A, 태스크B 외 N건
+
+⏳ 내일 이어서           ← 오늘 미완료 태스크 + LLM 제언
+  • 태스크명 → 제언 (15자 이내)
+
+🗂️ 오래 미뤄온 것 (7일+) ← due_date 7일 이상 경과 + LLM 제언
+  • 태스크명 (N일째) → 제언
+
+──────────────────────────
+"LLM 한 줄 코멘트 (20자 이내, 이모지 1개)"
+──────────────────────────
+```
 
 ### Notion Write 원칙
 
 | 상황 | 동작 |
 |------|------|
 | 오늘 페이지 없음 | 템플릿 구조로 신규 생성 (Morning + Night 섹션 포함) |
-| Morning 비어있음 | Top Priorities = LLM Top 3, Brain Dump = 나머지 Todoist |
+| Morning 비어있음 | 브리핑 전문(규칙 기반 포맷 + LLM ★/코멘트) 그대로 삽입 |
 | Morning 내용 있음 | 구분선 + `🤖 LLM 제안` 헤딩 후 append |
-| Night 섹션 | **절대 건드리지 않음** |
+| AI 저녁 제언 없음 | Night 헤딩 직전에 신규 삽입 |
+| AI 저녁 제언 있음 | 구분선 + `🤖 AI 저녁 제언 (재생성)` 으로 append |
+| Night 섹션 (감사/성찰) | **절대 건드리지 않음** |
 | Notion Write 실패 | skip + 로그, Discord 발송은 계속 진행 |
 
 ### 분기 처리
@@ -176,17 +233,27 @@ LLM은 `merged_context.json`을 입력받아 **2단 구조**로 브리핑을 생
 
 ### 산출물 스키마
 
-**`output/todoist_raw.json`**
+**`output/todoist_raw.json`** (Step 1a — 모닝)
 ```json
 {
   "date": "YYYY-MM-DD",
   "tasks": [
-    { "text": "할일 내용", "priority": 1, "due_time": "09:00" }
+    { "id": "12345678", "text": "할일 내용", "priority": 1, "due_date": "YYYY-MM-DD", "due_time": "09:00", "project_name": "프로젝트", "root_project_name": "業務リスト" }
   ]
 }
 ```
 
-**`output/gcal_raw.json`**
+**`output/todoist_completed.json`** (Step N2 — 나이트, 아침 계획 중 완료된 것)
+```json
+{
+  "date": "YYYY-MM-DD",
+  "tasks": [
+    { "id": "12345678", "text": "완료된 할일", "priority": 1, "due_date": "YYYY-MM-DD", "due_time": "", "project_name": "프로젝트", "root_project_name": "業務リスト" }
+  ]
+}
+```
+
+**`output/gcal_raw.json`** (Step 1b — 모닝)
 ```json
 {
   "date": "YYYY-MM-DD",
@@ -196,12 +263,12 @@ LLM은 `merged_context.json`을 입력받아 **2단 구조**로 브리핑을 생
 }
 ```
 
-**`output/merged_context.json`** (Step 2 병합 산출물)
+**`output/merged_context.json`** (Step 2 병합 산출물 — 나이트 모드에서 재사용)
 ```json
 {
   "date": "YYYY-MM-DD",
   "todoist": [
-    { "text": "할일 내용", "priority": 1, "due_time": "09:00" }
+    { "id": "12345678", "text": "할일 내용", "priority": 1, "due_date": "YYYY-MM-DD", "due_time": "09:00", "root_project_name": "業務リスト" }
   ],
   "gcal_events": [
     { "title": "이벤트 제목", "start": "10:00", "end": "11:00" }
@@ -213,16 +280,24 @@ LLM은 `merged_context.json`을 입력받아 **2단 구조**로 브리핑을 생
 ```json
 {
   "timestamp": "ISO8601+09:00",
+  "mode": "morning | night",
   "status": "success | skipped | failed",
-  "reason": "all_sources_empty | llm_retry_exceeded | discord_error | notion_write_error | ...",
+  "reason": "all_sources_empty | discord_error | notion_write_error | ...",
+  "llm_model": "gemini-2.0-flash",
+
+  // 모닝 모드 전용 필드
   "sources_collected": ["todoist", "gcal"],
   "sources_skipped": [],
   "todo_count": 5,
   "event_count": 2,
+  "starred_items": ["태스크 A"],
   "notion_write_status": "success | skipped | appended",
-  "top3_items": ["태스크 A", "태스크 B", "태스크 C"],
-  "retry_count": 0,
-  "llm_model": "gemini-2.5-flash"
+
+  // 나이트 모드 전용 필드
+  "completed_count": 8,
+  "incomplete_count": 4,
+  "long_delayed_count": 2,
+  "comment": "LLM 코멘트"
 }
 ```
 
@@ -234,10 +309,13 @@ LLM은 `merged_context.json`을 입력받아 **2단 구조**로 브리핑을 생
 # 의존성 설치
 pip install -r requirements.txt
 
-# 에이전트 수동 실행
-python main.py
+# 모닝 모드 수동 실행
+python main.py --mode morning
 
-# GitHub Actions 수동 트리거
+# 나이트 모드 수동 실행 (아침 실행 후 merged_context.json 있어야 함)
+python main.py --mode night
+
+# GitHub Actions 수동 트리거 (Determine Mode 스텝이 현재 UTC 시각으로 모드 자동 판별)
 # Actions 탭 → "Daily Briefing Agent" → Run workflow
 ```
 
@@ -279,18 +357,22 @@ export DISCORD_WEBHOOK_URL=...
 | 항목 | 결정 |
 |------|------|
 | Notion 역할 | 출력 대상 — Morning 섹션 자동 채움 (이월 소스 역할 제거) |
-| Notion 쓰기 범위 | Morning 섹션만 (Top Priorities 3 + Brain Dump). Night 섹션 절대 건드리지 않음 |
+| Notion 쓰기 범위 | Morning 섹션 (모닝 모드) + AI 저녁 제언 섹션 (나이트 모드). Night 감사/성찰 섹션 절대 건드리지 않음 |
 | Notion 쓰기 방식 | 텍스트 블록 (to_do 체크박스 아님) — 기록/참조 목적 |
 | Notion Morning 내용 있을 때 | append — 구분선 + `🤖 LLM 제안` 헤딩으로 구분 |
 | 이월 개념 | 제거 — Todoist가 이미 미완료 태스크 이월 관리 |
 | Todoist 수집 범위 | 오늘 due date인 태스크 전체 (완료 제외) |
 | GCal 인증 방식 | OAuth2 — `GCAL_CLIENT_ID` + `GCAL_CLIENT_SECRET` + `GCAL_TOKEN_JSON` (token.json base64) |
 | GCal 수집 범위 | 오늘 00:00~23:59 JST 이벤트 전체 |
-| LLM | Gemini `gemini-2.5-flash` (`google-genai` SDK) — Free tier |
-| Top 3 도출 | LLM이 GCal 시간 인접성 기준으로 Todoist 태스크에서 자동 선정 |
-| 브리핑 메시지 구조 | ⭐ Top 3 → 📋 기타 2단 구조 |
+| LLM | Gemini `gemini-2.0-flash` (`google-genai` SDK) — Free tier (1,500회/일 무료) |
+| 브리핑 메시지 구조 | 규칙 기반 (💼 업무 / 📚 자기계발 / 📦 백로그) + LLM ★ 판단 + 한 줄 코멘트 |
 | 빈 상태 처리 | 2소스 모두 비어있어도 빈 브리핑 메시지 Discord 발송 |
 | 소스 부분 실패 처리 | 개별 소스 실패는 skip 처리, 나머지 소스로 브리핑 생성 |
 | 발송 채널 | Discord Incoming Webhook (`DISCORD_WEBHOOK_URL`) — 개인 서버 |
-| 실행 환경 | GitHub Actions cron — `0 23 * * *` UTC (= 08:00 JST) |
+| 실행 환경 | GitHub Actions cron 2회 — `30 22 * * *` UTC (= JST 07:30 모닝), `30 11 * * *` UTC (= JST 20:30 나이트) |
+| 모드 판별 | UTC 시각이 22 이상이면 morning, 그 외 night (Determine Mode 스텝) |
+| 날짜 기준 | 모든 `date.today()` → `datetime.now(JST).date()` — UTC 기준 날짜 버그 방지 |
+| 완료 태스크 수집 | 별도 API 불필요 — 아침 todoist_raw.json과 현재 active 태스크 ID 비교로 역산 |
+| 장기 지연 기준 | due_date가 오늘 기준 7일 이상 경과한 태스크 (`LONG_DELAY_THRESHOLD_DAYS = 7`) |
+| pip 캐시 | `actions/cache@v4` — requirements.txt 해시 기반, 반복 실행 시 설치 시간 단축 |
 | 저장소 이름 | `daily-productivity-master` |

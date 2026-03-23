@@ -2,9 +2,11 @@ name: Daily Briefing Agent
 
 on:
   schedule:
-    # 매일 UTC 23:00 = JST 08:00
-    - cron: '0 23 * * *'
-  workflow_dispatch: # GitHub Actions 탭에서 수동 트리거 가능
+    # 아침: UTC 22:30 = JST 07:30 (GitHub Actions 지연 대비 30분 앞당김)
+    - cron: '30 22 * * *'
+    # 저녁: UTC 11:30 = JST 20:30 (GitHub Actions 지연 대비 30분 앞당김)
+    - cron: '30 11 * * *'
+  workflow_dispatch: # GitHub Actions 탭에서 수동 트리거 가능 (기본 morning 모드)
 
 jobs:
   run-agent:
@@ -22,6 +24,14 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Install Dependencies
         run: |
           pip install -r requirements.txt
@@ -30,10 +40,20 @@ jobs:
         run: |
           echo "=== Git SHA ==="
           git rev-parse HEAD
-          echo "=== main.py 구분선 확인 ==="
-          grep -n "SEP\|━━━\|──────" main.py | head -10
           echo "=== GEMINI_MODEL ==="
           grep "GEMINI_MODEL" main.py
+
+      - name: Determine Mode
+        id: mode
+        run: |
+          HOUR=$(date -u +%H)
+          # UTC 22:30 = JST 07:30 (아침), UTC 11:30 = JST 20:30 (저녁)
+          if [ "$HOUR" -ge 22 ]; then
+            echo "mode=morning" >> $GITHUB_OUTPUT
+          else
+            echo "mode=night" >> $GITHUB_OUTPUT
+          fi
+          echo "UTC hour: $HOUR → mode: $(cat $GITHUB_OUTPUT | grep mode | cut -d= -f2)"
 
       - name: Run Agent
         env:
@@ -47,4 +67,4 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          python main.py
+          python main.py --mode ${{ steps.mode.outputs.mode }}
