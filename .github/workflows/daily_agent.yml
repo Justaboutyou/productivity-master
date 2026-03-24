@@ -8,6 +8,10 @@ on:
     - cron: '30 11 * * *'
   workflow_dispatch: # GitHub Actions 탭에서 수동 트리거 가능 (기본 morning 모드)
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   run-agent:
     runs-on: ubuntu-latest

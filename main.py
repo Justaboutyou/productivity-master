@@ -159,8 +159,8 @@ def run_step2(today: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def classify_gcal_event(event: dict) -> str:
-    if event.get("colorId") == "4":
-        return "personal"
+    if event.get("colorId") == "4":  # Flamingo = 업무 캘린더
+        return "work"
     title = event.get("title", "")
     for kw in PERSONAL_KEYWORDS:
         if kw in title:
@@ -299,7 +299,7 @@ def generate_stars_and_comment(
 {fmt_tasks(personal_tasks)}
 
 ★ 판단 기준:
-- p1은 무조건 ★
+- p1은 코드에서 자동 처리됨 — starred에 포함하지 않아도 됨
 - p2 중 due date가 오늘({today})이면 ★
 - 업무와 자기계발 각각 독립적으로 판단
 
@@ -743,6 +743,11 @@ def main():
     # Step 4 — LLM ★ + 코멘트
     print("[Step 4] LLM ★ 판단 + 코멘트 생성 중...")
     starred, comment = generate_stars_and_comment(client, merged)
+
+    # p1은 LLM 실패 여부와 무관하게 코드 레벨에서 무조건 ★ 보장
+    p1_texts = {t["text"] for t in merged["todoist"] if t.get("priority") == 1}
+    starred = list(set(starred) | p1_texts)
+
     print(f"[Step 4] ★ 태스크: {starred}")
     print(f"[Step 4] 코멘트: {comment}")
 
