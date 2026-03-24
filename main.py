@@ -259,74 +259,46 @@ def build_formatted_briefing(merged: dict, starred: list[str], comment: str) -> 
 
 
 # ---------------------------------------------------------------------------
-# Step 4 — LLM ★ 판단 + 한 줄 코멘트 생성 (단일 호출)
+# Step 4 — LLM 한 줄 코멘트 생성
 # ---------------------------------------------------------------------------
 
-def generate_stars_and_comment(
+def generate_comment(
     client: genai.Client, merged: dict
-) -> tuple[list[str], str]:
-    """LLM에게 ★ 태스크 목록과 한 줄 코멘트를 JSON으로 받아 반환.
-
-    Returns:
-        (starred_texts, comment)
-        starred_texts: ★를 붙여야 하는 태스크 text 목록
-        comment: 한 줄 코멘트 문자열
-    """
+) -> str:
+    """LLM에게 한 줄 코멘트를 JSON으로 받아 반환."""
     dt = date.fromisoformat(merged["date"])
     weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
     weekday = weekdays_ko[dt.weekday()]
     today = merged["date"]
 
-    work_tasks = [t for t in merged["todoist"] if classify_todoist_task(t) == "work"]
-    personal_tasks = [t for t in merged["todoist"] if classify_todoist_task(t) == "personal"]
-
-    def fmt_tasks(tasks: list) -> str:
-        if not tasks:
-            return "  (없음)"
-        return "\n".join(
-            f'  - "{t["text"]}" (p{t["priority"]}, due: {t.get("due_date", today)})'
-            for t in tasks
-        )
-
-    prompt = f"""오늘 브리핑용 ★ 판단과 한 줄 코멘트를 JSON으로 반환해줘.
+    prompt = f"""오늘 브리핑용 한 줄 코멘트를 JSON으로 반환해줘.
 
 오늘: {today} ({weekday}요일)
-
-[업무 태스크]
-{fmt_tasks(work_tasks)}
-
-[자기계발 태스크]
-{fmt_tasks(personal_tasks)}
-
-★ 판단 기준:
-- p1은 코드에서 자동 처리됨 — starred에 포함하지 않아도 됨
-- p2 중 due date가 오늘({today})이면 ★
-- 업무와 자기계발 각각 독립적으로 판단
 
 한 줄 코멘트 규칙:
 - 30자 이내, 한국어, 친근하고 실용적
 - 이모지 1개 포함
 
 JSON만 출력 (다른 텍스트 없이):
-{{"starred": ["태스크 텍스트1", "태스크 텍스트2"], "comment": "한 줄 코멘트"}}"""
+{{"comment": "한 줄 코멘트"}}"""
 
     try:
         response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
         raw = response.text.strip()
     except Exception as e:
         print(f"[Step 4] LLM API 오류 (fallback): {e}", file=sys.stderr)
-        return [], ""
+        return ""
 
     # JSON 추출 (마크다운 코드블록 대응)
     match = re.search(r"\{.*\}", raw, re.DOTALL)
     if not match:
-        return [], raw  # fallback: 코멘트 전체를 텍스트로
+        return raw  # fallback: 전체를 코멘트로
 
     try:
         data = json.loads(match.group())
-        return data.get("starred", []), data.get("comment", "")
+        return data.get("comment", "")
     except json.JSONDecodeError:
-        return [], raw
+        return raw
 
 
 # ---------------------------------------------------------------------------
@@ -740,13 +712,12 @@ def main():
 
     client = genai.Client(api_key=gemini_api_key)
 
-    # Step 4 — LLM ★ + 코멘트
-    print("[Step 4] LLM ★ 판단 + 코멘트 생성 중...")
-    starred, comment = generate_stars_and_comment(client, merged)
+    # Step 4 — LLM 코멘트 생성 + p1 ★ 코드 보장
+    print("[Step 4] LLM 코멘트 생성 중...")
+    comment = generate_comment(client, merged)
 
-    # p1은 LLM 실패 여부와 무관하게 코드 레벨에서 무조건 ★ 보장
-    p1_texts = {t["text"] for t in merged["todoist"] if t.get("priority") == 1}
-    starred = list(set(starred) | p1_texts)
+    # p1은 코드 레벨에서 무조건 ★ 보장
+    starred = [t["text"] for t in merged["todoist"] if t.get("priority") == 1]
 
     print(f"[Step 4] ★ 태스크: {starred}")
     print(f"[Step 4] 코멘트: {comment}")
