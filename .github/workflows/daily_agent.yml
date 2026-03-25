@@ -59,6 +59,14 @@ jobs:
           fi
           echo "UTC hour: $HOUR → mode: $(cat $GITHUB_OUTPUT | grep mode | cut -d= -f2)"
 
+      - name: Download Morning Artifacts (Night only)
+        if: steps.mode.outputs.mode == 'night'
+        uses: actions/download-artifact@v4
+        with:
+          name: morning-context
+          path: output/
+        continue-on-error: true
+
       - name: Run Agent
         env:
           PYTHONUNBUFFERED: "1"
@@ -72,3 +80,14 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           python main.py --mode ${{ steps.mode.outputs.mode }}
+
+      - name: Upload Morning Artifacts (Morning only)
+        if: steps.mode.outputs.mode == 'morning'
+        uses: actions/upload-artifact@v4
+        with:
+          name: morning-context
+          path: |
+            output/merged_context.json
+            output/todoist_raw.json
+          retention-days: 1
+          overwrite: true
