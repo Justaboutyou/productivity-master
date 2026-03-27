@@ -20,7 +20,14 @@
       "Bash(cd \"/Users/jaehee/Downloads/05_코드_개발/Vibe Coding/agentic_system\" && python .claude/skills/gcal-reader/scripts/gcal_auth.py 2>&1)",
       "Bash(cd \"/Users/jaehee/Downloads/05_코드_개발/Vibe Coding/agentic_system\" && python main.py 2>&1)",
       "Bash(cd \"/Users/jaehee/Downloads/05_코드_개발/Vibe Coding/agentic_system\" && python .claude/skills/gcal-reader/scripts/fetch_gcal_events.py 2>&1)",
-      "Bash(cd \"/Users/jaehee/Downloads/05_코드_개발/Vibe Coding/agentic_system\" && gh run list --limit 5 2>&1)"
+      "Bash(cd \"/Users/jaehee/Downloads/05_코드_개발/Vibe Coding/agentic_system\" && gh run list --limit 5 2>&1)",
+      "Skill(commit-commands:commit-push-pr)",
+      "Bash(cd \"/Users/jaehee/Downloads/05_코드_개발/Vibe Coding/agentic_system\" && python test_format.py)",
+      "Bash(cd /Users/jaehee/Downloads/05_코드_개발/Vibe\\\\ Coding/agentic_system && gh run view 23396550798 --log 2>&1 | grep -E \"Step 1|GCal|Todoist|Fetched|skipped|failed|success\" | head -20)",
+      "Bash(cd \"/Users/jaehee/Downloads/05_코드_개발/Vibe Coding/agentic_system\" && gh run list --limit 8 --json databaseId,displayTitle,status,conclusion,createdAt,headSha 2>&1)",
+      "Bash(cd \"/Users/jaehee/Downloads/05_코드_개발/Vibe Coding/agentic_system\" && gh run view 23593355100 --log 2>&1 | grep -E \"Download Morning|morning-context|merged_context|artifact|mode=|Step N\" | head -30)",
+      "Bash(cd \"/Users/jaehee/Downloads/05_코드_개발/Vibe Coding/agentic_system\" && gh run list --limit 3)",
+      "Skill(commit-commands:commit)"
     ]
   }
 }
