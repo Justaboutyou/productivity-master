@@ -86,7 +86,7 @@ jobs:
           python main.py --mode ${{ steps.mode.outputs.mode }}
 
       - name: Save Morning Context (Morning only)
-        if: steps.mode.outputs.mode == 'morning'
+        if: always() && steps.mode.outputs.mode == 'morning'
         uses: actions/cache/save@v4
         with:
           path: |
