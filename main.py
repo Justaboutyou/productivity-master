@@ -56,22 +56,43 @@ WORK_KEYWORDS = ["미팅", "스탠드업", "리뷰", "발표", "보고"]
 # ✏️ 수정 가능한 LLM 프롬프트 — 원하는 대로 편집하세요
 # ---------------------------------------------------------------------------
 MORNING_ADVICE_PROMPT = """\
-오늘 스케쥴을 보고 비서처럼 제안해줘.
+당신은 전략적 사고를 돕는 AI 비서입니다.
+아래 오늘의 캘린더 일정과 할 일 목록을 분석하여,
+간결하고 날카로운 하루 전략 코멘트를 작성하세요.
 
-오늘: {date} ({weekday}요일)
+---
 
-[오늘 태스크]
-{tasks}
+[입력 데이터]
+- 오늘 날짜 및 요일: {date}
+- 캘린더 일정: {calendar_events}
+- 업무 태스크: {work_tasks}
+- 자기계발 태스크: {self_dev_tasks}
+- 백로그: {backlog_tasks}
 
-[오늘 일정]
-{events}
+---
 
-규칙:
-- top_task: 지금 당장 집중해야 할 태스크 1개 (태스크명 그대로, 변형 없이)
-- schedule_tip: 일정과 태스크를 보고 시간 활용 제안 (30자 이내, 한국어)
+[출력 규칙]
+1. **오늘의 포지션** (1문장)
+   - 이번 주 흐름에서 오늘이 어떤 날인지 한 줄로 규정
+   - 예: "주중 압박을 소화한 뒤 맞는 회복형 일요일"
 
-JSON만 출력 (다른 텍스트 없이):
-{{"top_task": "태스크명", "schedule_tip": "제안"}}"""
+2. **오늘 집중할 Top 3** (번호 목록)
+   - 태스크 전체 중 오늘 실제로 실행해야 할 것만 추림
+   - 선택 근거를 트레이드오프 관점에서 1줄씩 설명
+   - ★ 표시된 항목은 반드시 포함 여부 판단
+
+3. **버려도 되는 것** (1-2줄)
+   - 오늘 하지 않아도 되는 태스크와 그 이유를 명시
+   - 백로그 항목 중 오늘 굳이 건드리지 않아도 되는 것 포함
+
+---
+
+[문체 규칙]
+- 한국어로 작성
+- 공감이나 칭찬 없이 바로 분석으로 시작
+- 총 10줄 이내
+- 이모지 사용 금지
+- 말투는 간결하고 단언적으로 ("~하세요" 아닌 "~다" 체)"""
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +229,7 @@ def render_events(events: list) -> list[str]:
     return [f"  {e['start']}~{e['end']}  {e['title']}" for e in events]
 
 
-def build_formatted_briefing(merged: dict, starred: list[str], top_task: str, schedule_tip: str) -> str:
+def build_formatted_briefing(merged: dict, starred: list[str], advice: str) -> str:
     dt = date.fromisoformat(merged["date"])
     weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
     weekday = weekdays_ko[dt.weekday()]
@@ -274,14 +295,8 @@ def build_formatted_briefing(merged: dict, starred: list[str], top_task: str, sc
         lines += ["📦 백로그", f"  {texts}", ""]
 
     # ── 5. LLM 제안 ──
-    advice_lines = []
-    if top_task:
-        advice_lines.append(f"  ▶ 지금 당장: {top_task}")
-    if schedule_tip:
-        advice_lines.append(f"  💡 {schedule_tip}")
-
-    if advice_lines:
-        lines += [SEP, "🤖 오늘의 제안"] + advice_lines + [SEP]
+    if advice:
+        lines += [SEP, "🤖 오늘의 제안", advice, SEP]
 
     return "\n".join(lines)
 
@@ -291,46 +306,46 @@ def build_formatted_briefing(merged: dict, starred: list[str], top_task: str, sc
 # ---------------------------------------------------------------------------
 
 def generate_advice(
-    client: genai.Client, merged: dict
-) -> tuple[str, str]:
-    """LLM에게 top_task + schedule_tip을 JSON으로 받아 반환."""
+    client: genai.Client, merged: dict, starred: list[str]
+) -> str:
+    """LLM에게 전략 분석을 요청하여 텍스트로 반환."""
     dt = date.fromisoformat(merged["date"])
     weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
     weekday = weekdays_ko[dt.weekday()]
+    starred_set = set(starred)
 
-    tasks_str = "\n".join(
-        f'  - {t["text"]} (p{t["priority"]}, {t.get("root_project_name", "")})'
-        for t in merged["todoist"]
-    ) or "  (없음)"
+    def fmt_tasks(tasks: list) -> str:
+        if not tasks:
+            return "(없음)"
+        lines = []
+        for t in tasks:
+            star = " ★" if t["text"] in starred_set else ""
+            lines.append(f"  - {t['text']}{star} (p{t['priority']})")
+        return "\n".join(lines)
+
+    work_tasks = [t for t in merged["todoist"] if classify_todoist_task(t) == "work"]
+    personal_tasks = [t for t in merged["todoist"] if classify_todoist_task(t) == "personal"]
+    backlog_tasks = [t for t in merged["todoist"] if classify_todoist_task(t) == "backlog"]
 
     events_str = "\n".join(
-        f'  - {e["start"]}~{e["end"]} {e["title"]}'
+        f"  - {e['start']}~{e['end']} {e['title']}"
         for e in merged["gcal_events"]
-    ) or "  (없음)"
+    ) or "(없음)"
 
     prompt = MORNING_ADVICE_PROMPT.format(
-        date=merged["date"],
-        weekday=weekday,
-        tasks=tasks_str,
-        events=events_str,
+        date=f"{merged['date']} ({weekday}요일)",
+        calendar_events=events_str,
+        work_tasks=fmt_tasks(work_tasks),
+        self_dev_tasks=fmt_tasks(personal_tasks),
+        backlog_tasks=fmt_tasks(backlog_tasks),
     )
 
     try:
         response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-        raw = response.text.strip()
+        return response.text.strip()
     except Exception as e:
         print(f"[Step 4] LLM API 오류 (fallback): {e}", file=sys.stderr)
-        return "", ""
-
-    match = re.search(r"\{.*\}", raw, re.DOTALL)
-    if not match:
-        return "", ""
-
-    try:
-        data = json.loads(match.group())
-        return data.get("top_task", ""), data.get("schedule_tip", "")
-    except json.JSONDecodeError:
-        return "", ""
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -746,19 +761,18 @@ def main():
 
     client = genai.Client(api_key=gemini_api_key)
 
-    # Step 4 — LLM 비서 제안 생성 + p1 ★ 코드 보장
-    print("[Step 4] LLM 제안 생성 중...")
-    top_task, schedule_tip = generate_advice(client, merged)
-
     # p1은 코드 레벨에서 무조건 ★ 보장
     starred = [t["text"] for t in merged["todoist"] if t.get("priority") == 1]
-
     print(f"[Step 4] ★ 태스크: {starred}")
-    print(f"[Step 4] top_task: {top_task} / schedule_tip: {schedule_tip}")
+
+    # Step 4 — LLM 비서 제안 생성
+    print("[Step 4] LLM 제안 생성 중...")
+    advice = generate_advice(client, merged, starred)
+    print(f"[Step 4] 제안 생성 완료 ({len(advice)}자)")
 
     # Step 3 — 포맷 빌드
     print("[Step 3] 규칙 기반 브리핑 포맷 빌드 중...")
-    briefing = build_formatted_briefing(merged, starred, top_task, schedule_tip)
+    briefing = build_formatted_briefing(merged, starred, advice)
 
     # 브리핑 저장
     BRIEFING_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -781,7 +795,6 @@ def main():
         event_count=event_count,
         notion_write_status=notion_write_status,
         starred_items=starred,
-        top_task=top_task or None,
     ))
 
     if not success:
