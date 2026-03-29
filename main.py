@@ -31,6 +31,7 @@ BASE_DIR = Path(__file__).parent
 SCRIPTS = {
     "todoist": BASE_DIR / ".claude/skills/todoist-reader/scripts/fetch_todoist_tasks.py",
     "todoist_completed": BASE_DIR / ".claude/skills/todoist-reader/scripts/fetch_todoist_completed.py",
+    "todoist_upcoming": BASE_DIR / ".claude/skills/todoist-reader/scripts/fetch_todoist_upcoming.py",
     "gcal": BASE_DIR / ".claude/skills/gcal-reader/scripts/fetch_gcal_events.py",
     "notion_write": BASE_DIR / ".claude/skills/notion-writer/scripts/write_notion_morning.py",
     "notion_night": BASE_DIR / ".claude/skills/notion-writer/scripts/write_notion_night.py",
@@ -38,6 +39,7 @@ SCRIPTS = {
 }
 TODOIST_RAW_PATH = BASE_DIR / "output" / "todoist_raw.json"
 TODOIST_COMPLETED_PATH = BASE_DIR / "output" / "todoist_completed.json"
+TODOIST_UPCOMING_PATH = BASE_DIR / "output" / "todoist_upcoming.json"
 GCAL_RAW_PATH = BASE_DIR / "output" / "gcal_raw.json"
 MERGED_PATH = BASE_DIR / "output" / "merged_context.json"
 BRIEFING_PATH = BASE_DIR / "output" / "briefing_draft.md"
@@ -167,6 +169,24 @@ def run_step1b() -> tuple[bool, str]:
     err = result.stderr.strip()
     print(f"[Step 1b] 실패 (skip): {err}", file=sys.stderr)
     return False, err
+
+
+# ---------------------------------------------------------------------------
+# Step 1c — Todoist 향후 14일 태스크 수집
+# ---------------------------------------------------------------------------
+
+def run_step1c() -> bool:
+    print("[Step 1c] Todoist 향후 14일 태스크 수집 중...")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS["todoist_upcoming"])],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print(f"[Step 1c] {result.stdout.strip()}")
+        return True
+    print(f"[Step 1c] 실패 (skip): {result.stderr.strip()}", file=sys.stderr)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -350,11 +370,31 @@ def generate_advice(
     }
     weekly_context = weekly_context_map[dt.weekday()]
 
+    # 향후 7일 이내 태스크 로드 (Step 1c 산출물)
+    DISPLAY_DAYS = 7
+    cutoff_str = (dt + timedelta(days=DISPLAY_DAYS)).isoformat()
+    upcoming_deadlines_str = "(없음)"
+    if TODOIST_UPCOMING_PATH.exists():
+        try:
+            upcoming_data = json.loads(TODOIST_UPCOMING_PATH.read_text())
+            upcoming_tasks = [
+                t for t in upcoming_data.get("tasks", [])
+                if t.get("due_date", "") <= cutoff_str
+            ]
+            if upcoming_tasks:
+                lines = []
+                for t in upcoming_tasks:
+                    days_left = (date.fromisoformat(t["due_date"]) - dt).days
+                    lines.append(f"  - {t['due_date']} ({days_left}일 후): {t['text']} (p{t['priority']})")
+                upcoming_deadlines_str = "\n".join(lines)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
     prompt = MORNING_ADVICE_PROMPT.format(
         date=merged["date"],
         weekday=f"{weekday}요일",
         weekly_context=weekly_context,
-        upcoming_deadlines="(데이터 없음 — 추후 연동 예정)",
+        upcoming_deadlines=upcoming_deadlines_str,
         calendar_events=events_str,
         work_tasks=fmt_tasks(work_tasks),
         self_dev_tasks=fmt_tasks(personal_tasks),
@@ -746,6 +786,9 @@ def main():
         sources_skipped.append("gcal")
         if err:
             skip_errors["gcal"] = err
+
+    # Step 1c — Todoist 향후 14일 (실패해도 계속 진행)
+    run_step1c()
 
     # Step 2 — 병합
     merged = run_step2(today)
