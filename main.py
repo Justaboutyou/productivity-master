@@ -52,6 +52,27 @@ GEMINI_MODEL = "gemini-2.0-flash"
 PERSONAL_KEYWORDS = ["심리상담", "병원", "운동", "자세교정", "가족", "약속"]
 WORK_KEYWORDS = ["미팅", "스탠드업", "리뷰", "발표", "보고"]
 
+# ---------------------------------------------------------------------------
+# ✏️ 수정 가능한 LLM 프롬프트 — 원하는 대로 편집하세요
+# ---------------------------------------------------------------------------
+MORNING_ADVICE_PROMPT = """\
+오늘 스케쥴을 보고 비서처럼 제안해줘.
+
+오늘: {date} ({weekday}요일)
+
+[오늘 태스크]
+{tasks}
+
+[오늘 일정]
+{events}
+
+규칙:
+- top_task: 지금 당장 집중해야 할 태스크 1개 (태스크명 그대로, 변형 없이)
+- schedule_tip: 일정과 태스크를 보고 시간 활용 제안 (30자 이내, 한국어)
+
+JSON만 출력 (다른 텍스트 없이):
+{{"top_task": "태스크명", "schedule_tip": "제안"}}"""
+
 
 # ---------------------------------------------------------------------------
 # 로그
@@ -187,7 +208,7 @@ def render_events(events: list) -> list[str]:
     return [f"  {e['start']}~{e['end']}  {e['title']}" for e in events]
 
 
-def build_formatted_briefing(merged: dict, starred: list[str], comment: str) -> str:
+def build_formatted_briefing(merged: dict, starred: list[str], top_task: str, schedule_tip: str) -> str:
     dt = date.fromisoformat(merged["date"])
     weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
     weekday = weekdays_ko[dt.weekday()]
@@ -252,53 +273,64 @@ def build_formatted_briefing(merged: dict, starred: list[str], comment: str) -> 
         texts = " · ".join(t["text"] for t in backlog_tasks)
         lines += ["📦 백로그", f"  {texts}", ""]
 
-    # ── 5. LLM 코멘트 ──
-    lines += [SEP, f'"{comment}"', SEP]
+    # ── 5. LLM 제안 ──
+    advice_lines = []
+    if top_task:
+        advice_lines.append(f"  ▶ 지금 당장: {top_task}")
+    if schedule_tip:
+        advice_lines.append(f"  💡 {schedule_tip}")
+
+    if advice_lines:
+        lines += [SEP, "🤖 오늘의 제안"] + advice_lines + [SEP]
 
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# Step 4 — LLM 한 줄 코멘트 생성
+# Step 4 — LLM 비서 제안 생성
 # ---------------------------------------------------------------------------
 
-def generate_comment(
+def generate_advice(
     client: genai.Client, merged: dict
-) -> str:
-    """LLM에게 한 줄 코멘트를 JSON으로 받아 반환."""
+) -> tuple[str, str]:
+    """LLM에게 top_task + schedule_tip을 JSON으로 받아 반환."""
     dt = date.fromisoformat(merged["date"])
     weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
     weekday = weekdays_ko[dt.weekday()]
-    today = merged["date"]
 
-    prompt = f"""오늘 브리핑용 한 줄 코멘트를 JSON으로 반환해줘.
+    tasks_str = "\n".join(
+        f'  - {t["text"]} (p{t["priority"]}, {t.get("root_project_name", "")})'
+        for t in merged["todoist"]
+    ) or "  (없음)"
 
-오늘: {today} ({weekday}요일)
+    events_str = "\n".join(
+        f'  - {e["start"]}~{e["end"]} {e["title"]}'
+        for e in merged["gcal_events"]
+    ) or "  (없음)"
 
-한 줄 코멘트 규칙:
-- 30자 이내, 한국어, 친근하고 실용적
-- 이모지 1개 포함
-
-JSON만 출력 (다른 텍스트 없이):
-{{"comment": "한 줄 코멘트"}}"""
+    prompt = MORNING_ADVICE_PROMPT.format(
+        date=merged["date"],
+        weekday=weekday,
+        tasks=tasks_str,
+        events=events_str,
+    )
 
     try:
         response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
         raw = response.text.strip()
     except Exception as e:
         print(f"[Step 4] LLM API 오류 (fallback): {e}", file=sys.stderr)
-        return ""
+        return "", ""
 
-    # JSON 추출 (마크다운 코드블록 대응)
     match = re.search(r"\{.*\}", raw, re.DOTALL)
     if not match:
-        return raw  # fallback: 전체를 코멘트로
+        return "", ""
 
     try:
         data = json.loads(match.group())
-        return data.get("comment", "")
+        return data.get("top_task", ""), data.get("schedule_tip", "")
     except json.JSONDecodeError:
-        return raw
+        return "", ""
 
 
 # ---------------------------------------------------------------------------
@@ -360,8 +392,6 @@ def make_empty_briefing(today: str) -> str:
         "📚 자기계발",
         "  (없음)",
         "",
-        SEP,
-        '"오늘은 등록된 태스크와 일정이 없습니다. 자유로운 하루! 😌"',
         SEP,
     ])
 
@@ -716,19 +746,19 @@ def main():
 
     client = genai.Client(api_key=gemini_api_key)
 
-    # Step 4 — LLM 코멘트 생성 + p1 ★ 코드 보장
-    print("[Step 4] LLM 코멘트 생성 중...")
-    comment = generate_comment(client, merged)
+    # Step 4 — LLM 비서 제안 생성 + p1 ★ 코드 보장
+    print("[Step 4] LLM 제안 생성 중...")
+    top_task, schedule_tip = generate_advice(client, merged)
 
     # p1은 코드 레벨에서 무조건 ★ 보장
     starred = [t["text"] for t in merged["todoist"] if t.get("priority") == 1]
 
     print(f"[Step 4] ★ 태스크: {starred}")
-    print(f"[Step 4] 코멘트: {comment}")
+    print(f"[Step 4] top_task: {top_task} / schedule_tip: {schedule_tip}")
 
     # Step 3 — 포맷 빌드
     print("[Step 3] 규칙 기반 브리핑 포맷 빌드 중...")
-    briefing = build_formatted_briefing(merged, starred, comment)
+    briefing = build_formatted_briefing(merged, starred, top_task, schedule_tip)
 
     # 브리핑 저장
     BRIEFING_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -751,7 +781,7 @@ def main():
         event_count=event_count,
         notion_write_status=notion_write_status,
         starred_items=starred,
-        comment=comment,
+        top_task=top_task or None,
     ))
 
     if not success:
