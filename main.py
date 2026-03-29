@@ -31,6 +31,7 @@ BASE_DIR = Path(__file__).parent
 SCRIPTS = {
     "todoist": BASE_DIR / ".claude/skills/todoist-reader/scripts/fetch_todoist_tasks.py",
     "todoist_completed": BASE_DIR / ".claude/skills/todoist-reader/scripts/fetch_todoist_completed.py",
+    "todoist_upcoming": BASE_DIR / ".claude/skills/todoist-reader/scripts/fetch_todoist_upcoming.py",
     "gcal": BASE_DIR / ".claude/skills/gcal-reader/scripts/fetch_gcal_events.py",
     "notion_write": BASE_DIR / ".claude/skills/notion-writer/scripts/write_notion_morning.py",
     "notion_night": BASE_DIR / ".claude/skills/notion-writer/scripts/write_notion_night.py",
@@ -38,6 +39,7 @@ SCRIPTS = {
 }
 TODOIST_RAW_PATH = BASE_DIR / "output" / "todoist_raw.json"
 TODOIST_COMPLETED_PATH = BASE_DIR / "output" / "todoist_completed.json"
+TODOIST_UPCOMING_PATH = BASE_DIR / "output" / "todoist_upcoming.json"
 GCAL_RAW_PATH = BASE_DIR / "output" / "gcal_raw.json"
 MERGED_PATH = BASE_DIR / "output" / "merged_context.json"
 BRIEFING_PATH = BASE_DIR / "output" / "briefing_draft.md"
@@ -51,6 +53,55 @@ GEMINI_MODEL = "gemini-2.0-flash"
 
 PERSONAL_KEYWORDS = ["심리상담", "병원", "운동", "자세교정", "가족", "약속"]
 WORK_KEYWORDS = ["미팅", "스탠드업", "리뷰", "발표", "보고"]
+
+# ---------------------------------------------------------------------------
+# ✏️ 수정 가능한 LLM 프롬프트 — 원하는 대로 편집하세요
+# ---------------------------------------------------------------------------
+MORNING_ADVICE_PROMPT = """\
+당신은 전략적 사고를 돕는 AI 비서입니다.
+단순한 태스크 정렬이 아니라, 오늘이라는 날을 어떻게 써야 하는지
+맥락을 읽고 판단해주세요.
+
+---
+
+[컨텍스트]
+- 오늘: {date} ({weekday})
+- 이번 주 누적 피로도/밀도: {weekly_context}
+- 다가오는 데드라인/이벤트: {upcoming_deadlines}
+
+[오늘 데이터]
+- 캘린더: {calendar_events}
+- 업무: {work_tasks}
+- 자기계발: {self_dev_tasks}
+- 백로그: {backlog_tasks}
+
+---
+
+[출력 형식]
+
+오늘의 포지션 (1문장)
+→ 단순 요일 묘사 금지. 오늘이 이번 주/이번 달 흐름에서
+  갖는 전략적 의미를 규정할 것.
+  나쁜 예: "주말을 활용하는 학습형 일요일이다"
+  좋은 예: "다음 주 실전 전에 마지막으로 개념을 채울 수 있는 날이다"
+
+집중할 것 Top 2-3
+→ 선택 이유를 태스크 자체가 아니라
+  '지금 이 시점에 왜 이것인가'로 설명할 것
+→ 단순 중요도 순 나열 금지
+→ 태스크 간 시너지나 긴장관계가 있다면 명시
+
+오늘 내려놓을 것
+→ "긴급성이 없다" 같은 일반론 금지
+→ '오늘 하지 않는 것이 오히려 나은 이유'를 구체적으로
+
+---
+
+[문체]
+- 한국어, 10줄 이내
+- 분석은 단언적으로, 설명은 맥락 기반으로
+- 칭찬/공감 없이 바로 본론
+- 이모지 사용 금지"""
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +172,24 @@ def run_step1b() -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# Step 1c — Todoist 향후 14일 태스크 수집
+# ---------------------------------------------------------------------------
+
+def run_step1c() -> bool:
+    print("[Step 1c] Todoist 향후 14일 태스크 수집 중...")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS["todoist_upcoming"])],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print(f"[Step 1c] {result.stdout.strip()}")
+        return True
+    print(f"[Step 1c] 실패 (skip): {result.stderr.strip()}", file=sys.stderr)
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Step 2 — 2소스 병합
 # ---------------------------------------------------------------------------
 
@@ -187,7 +256,7 @@ def render_events(events: list) -> list[str]:
     return [f"  {e['start']}~{e['end']}  {e['title']}" for e in events]
 
 
-def build_formatted_briefing(merged: dict, starred: list[str], comment: str) -> str:
+def build_formatted_briefing(merged: dict, starred: list[str], advice: str) -> str:
     dt = date.fromisoformat(merged["date"])
     weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
     weekday = weekdays_ko[dt.weekday()]
@@ -252,53 +321,92 @@ def build_formatted_briefing(merged: dict, starred: list[str], comment: str) -> 
         texts = " · ".join(t["text"] for t in backlog_tasks)
         lines += ["📦 백로그", f"  {texts}", ""]
 
-    # ── 5. LLM 코멘트 ──
-    lines += [SEP, f'"{comment}"', SEP]
+    # ── 5. LLM 제안 ──
+    if advice:
+        lines += [SEP, "🤖 오늘의 제안", advice, SEP]
 
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# Step 4 — LLM 한 줄 코멘트 생성
+# Step 4 — LLM 비서 제안 생성
 # ---------------------------------------------------------------------------
 
-def generate_comment(
-    client: genai.Client, merged: dict
+def generate_advice(
+    client: genai.Client, merged: dict, starred: list[str]
 ) -> str:
-    """LLM에게 한 줄 코멘트를 JSON으로 받아 반환."""
+    """LLM에게 전략 분석을 요청하여 텍스트로 반환."""
     dt = date.fromisoformat(merged["date"])
     weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
     weekday = weekdays_ko[dt.weekday()]
-    today = merged["date"]
+    starred_set = set(starred)
 
-    prompt = f"""오늘 브리핑용 한 줄 코멘트를 JSON으로 반환해줘.
+    def fmt_tasks(tasks: list) -> str:
+        if not tasks:
+            return "(없음)"
+        lines = []
+        for t in tasks:
+            star = " ★" if t["text"] in starred_set else ""
+            lines.append(f"  - {t['text']}{star} (p{t['priority']})")
+        return "\n".join(lines)
 
-오늘: {today} ({weekday}요일)
+    work_tasks = [t for t in merged["todoist"] if classify_todoist_task(t) == "work"]
+    personal_tasks = [t for t in merged["todoist"] if classify_todoist_task(t) == "personal"]
+    backlog_tasks = [t for t in merged["todoist"] if classify_todoist_task(t) == "backlog"]
 
-한 줄 코멘트 규칙:
-- 30자 이내, 한국어, 친근하고 실용적
-- 이모지 1개 포함
+    events_str = "\n".join(
+        f"  - {e['start']}~{e['end']} {e['title']}"
+        for e in merged["gcal_events"]
+    ) or "(없음)"
 
-JSON만 출력 (다른 텍스트 없이):
-{{"comment": "한 줄 코멘트"}}"""
+    weekly_context_map = {
+        0: "주 시작, 이번 주 첫 업무일",
+        1: "주중 화요일, 집중 가능 구간",
+        2: "주 중간, 에너지 안배 필요",
+        3: "주말 이틀 전, 마무리 준비 시작",
+        4: "주말 전날, 이번 주 마지막 업무일",
+        5: "주말 첫째 날, 회복 또는 자기계발",
+        6: "주말 마지막, 내일부터 바로 업무",
+    }
+    weekly_context = weekly_context_map[dt.weekday()]
+
+    # 향후 7일 이내 태스크 로드 (Step 1c 산출물)
+    DISPLAY_DAYS = 7
+    cutoff_str = (dt + timedelta(days=DISPLAY_DAYS)).isoformat()
+    upcoming_deadlines_str = "(없음)"
+    if TODOIST_UPCOMING_PATH.exists():
+        try:
+            upcoming_data = json.loads(TODOIST_UPCOMING_PATH.read_text())
+            upcoming_tasks = [
+                t for t in upcoming_data.get("tasks", [])
+                if t.get("due_date", "") <= cutoff_str
+            ]
+            if upcoming_tasks:
+                lines = []
+                for t in upcoming_tasks:
+                    days_left = (date.fromisoformat(t["due_date"]) - dt).days
+                    lines.append(f"  - {t['due_date']} ({days_left}일 후): {t['text']} (p{t['priority']})")
+                upcoming_deadlines_str = "\n".join(lines)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    prompt = MORNING_ADVICE_PROMPT.format(
+        date=merged["date"],
+        weekday=f"{weekday}요일",
+        weekly_context=weekly_context,
+        upcoming_deadlines=upcoming_deadlines_str,
+        calendar_events=events_str,
+        work_tasks=fmt_tasks(work_tasks),
+        self_dev_tasks=fmt_tasks(personal_tasks),
+        backlog_tasks=fmt_tasks(backlog_tasks),
+    )
 
     try:
         response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-        raw = response.text.strip()
+        return response.text.strip()
     except Exception as e:
         print(f"[Step 4] LLM API 오류 (fallback): {e}", file=sys.stderr)
         return ""
-
-    # JSON 추출 (마크다운 코드블록 대응)
-    match = re.search(r"\{.*\}", raw, re.DOTALL)
-    if not match:
-        return raw  # fallback: 전체를 코멘트로
-
-    try:
-        data = json.loads(match.group())
-        return data.get("comment", "")
-    except json.JSONDecodeError:
-        return raw
 
 
 # ---------------------------------------------------------------------------
@@ -360,8 +468,6 @@ def make_empty_briefing(today: str) -> str:
         "📚 자기계발",
         "  (없음)",
         "",
-        SEP,
-        '"오늘은 등록된 태스크와 일정이 없습니다. 자유로운 하루! 😌"',
         SEP,
     ])
 
@@ -681,6 +787,9 @@ def main():
         if err:
             skip_errors["gcal"] = err
 
+    # Step 1c — Todoist 향후 14일 (실패해도 계속 진행)
+    run_step1c()
+
     # Step 2 — 병합
     merged = run_step2(today)
     todo_count = len(merged["todoist"])
@@ -716,19 +825,18 @@ def main():
 
     client = genai.Client(api_key=gemini_api_key)
 
-    # Step 4 — LLM 코멘트 생성 + p1 ★ 코드 보장
-    print("[Step 4] LLM 코멘트 생성 중...")
-    comment = generate_comment(client, merged)
-
     # p1은 코드 레벨에서 무조건 ★ 보장
     starred = [t["text"] for t in merged["todoist"] if t.get("priority") == 1]
-
     print(f"[Step 4] ★ 태스크: {starred}")
-    print(f"[Step 4] 코멘트: {comment}")
+
+    # Step 4 — LLM 비서 제안 생성
+    print("[Step 4] LLM 제안 생성 중...")
+    advice = generate_advice(client, merged, starred)
+    print(f"[Step 4] 제안 생성 완료 ({len(advice)}자)")
 
     # Step 3 — 포맷 빌드
     print("[Step 3] 규칙 기반 브리핑 포맷 빌드 중...")
-    briefing = build_formatted_briefing(merged, starred, comment)
+    briefing = build_formatted_briefing(merged, starred, advice)
 
     # 브리핑 저장
     BRIEFING_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -751,7 +859,6 @@ def main():
         event_count=event_count,
         notion_write_status=notion_write_status,
         starred_items=starred,
-        comment=comment,
     ))
 
     if not success:
