@@ -403,9 +403,13 @@ def generate_advice(
 
     try:
         response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-        return response.text.strip()
+        text = response.text
+        if not text:
+            print("[Step 4] LLM 응답 비어있음 (안전 필터 또는 빈 응답)", file=sys.stderr)
+            return ""
+        return text.strip()
     except Exception as e:
-        print(f"[Step 4] LLM API 오류 (fallback): {e}", file=sys.stderr)
+        print(f"[Step 4] LLM API 오류: {type(e).__name__}: {e}", file=sys.stderr)
         return ""
 
 
@@ -859,6 +863,7 @@ def main():
         event_count=event_count,
         notion_write_status=notion_write_status,
         starred_items=starred,
+        llm_advice_status="success" if advice else "failed",
     ))
 
     if not success:
