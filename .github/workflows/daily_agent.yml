@@ -47,6 +47,26 @@ jobs:
           echo "=== GEMINI_MODEL ==="
           grep "GEMINI_MODEL" main.py
 
+      - name: Verify Gemini API
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python - <<'EOF'
+          import os, sys
+          from google import genai
+          key = os.environ.get("GEMINI_API_KEY", "")
+          if not key:
+              print("ERROR: GEMINI_API_KEY is empty")
+              sys.exit(1)
+          try:
+              client = genai.Client(api_key=key)
+              resp = client.models.generate_content(model="gemini-2.0-flash", contents="ping")
+              print(f"Gemini API OK: {repr(resp.text[:30])}")
+          except Exception as e:
+              print(f"ERROR: {type(e).__name__}: {e}", file=sys.stderr)
+              sys.exit(1)
+          EOF
+
       - name: Determine Mode
         id: mode
         run: |
