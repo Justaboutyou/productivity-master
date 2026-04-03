@@ -670,8 +670,10 @@ def run_night_mode():
 
     # Step N1 — 아침 merged_context 로드 (재수집 없음)
     print("[Night N1] 아침 merged_context.json 로드 중...")
-    if not MERGED_PATH.exists():
-        print("[Night N1] 아침 캐시 없음 — Todoist 재수집으로 폴백")
+    cache_stale = MERGED_PATH.exists() and json.loads(MERGED_PATH.read_text()).get("date") != today
+    if not MERGED_PATH.exists() or cache_stale:
+        reason = "날짜 불일치 (어제 캐시)" if cache_stale else "파일 없음"
+        print(f"[Night N1] 아침 캐시 없음 ({reason}) — Todoist 재수집으로 폴백")
         ok, _ = run_step1a()
         run_step2(today)
         if not MERGED_PATH.exists():
