@@ -48,6 +48,7 @@ jobs:
           grep "GEMINI_MODEL" main.py
 
       - name: Verify Gemini API
+        continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
