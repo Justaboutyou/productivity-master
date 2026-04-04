@@ -6,7 +6,17 @@ on:
     - cron: '30 22 * * *'
     # 저녁: UTC 11:30 = JST 20:30 (GitHub Actions 지연 대비 30분 앞당김)
     - cron: '30 11 * * *'
-  workflow_dispatch: # GitHub Actions 탭에서 수동 트리거 가능
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '실행 모드 (비워두면 시각 자동 판별)'
+        required: false
+        default: ''
+        type: choice
+        options:
+          - ''
+          - morning
+          - night
 
 concurrency:
   group: ${{ github.workflow }}
@@ -73,7 +83,11 @@ jobs:
         run: |
           HOUR=$(date -u +%H)
           DATE_JST=$(TZ='Asia/Tokyo' date '+%Y-%m-%d')
-          if [ "$HOUR" -ge 22 ]; then
+          MANUAL_MODE="${{ github.event.inputs.mode }}"
+          if [ -n "$MANUAL_MODE" ]; then
+            echo "mode=${MANUAL_MODE}" >> $GITHUB_OUTPUT
+            echo "수동 지정 모드: $MANUAL_MODE"
+          elif [ "$HOUR" -ge 22 ]; then
             echo "mode=morning" >> $GITHUB_OUTPUT
           else
             echo "mode=night" >> $GITHUB_OUTPUT
