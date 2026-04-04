@@ -49,7 +49,7 @@ RUN_LOG_PATH = BASE_DIR / "output" / "run_log.json"
 LONG_DELAY_THRESHOLD_DAYS = 7
 
 KST = timezone(timedelta(hours=9))
-GEMINI_MODEL = "gemini-2.0-flash-lite"
+GEMINI_MODEL = "gemini-2.5-flash-preview-04-17"
 
 PERSONAL_KEYWORDS = ["심리상담", "병원", "운동", "자세교정", "가족", "약속"]
 WORK_KEYWORDS = ["미팅", "스탠드업", "리뷰", "발표", "보고"]
