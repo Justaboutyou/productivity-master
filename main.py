@@ -405,14 +405,12 @@ def generate_advice(
         response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
         text = response.text
         if not text:
-            msg = f"[LLM 오류] 빈 응답 (안전 필터 가능성)"
-            print(f"[Step 4] {msg}", file=sys.stderr)
-            return msg
+            print("[Step 4] LLM 응답 비어있음 (안전 필터 또는 빈 응답)", file=sys.stderr)
+            return ""
         return text.strip()
     except Exception as e:
-        msg = f"[LLM 오류] {type(e).__name__}: {str(e)[:200]}"
-        print(f"[Step 4] {msg}", file=sys.stderr)
-        return msg
+        print(f"[Step 4] LLM API 오류: {type(e).__name__}: {e}", file=sys.stderr)
+        return ""
 
 
 # ---------------------------------------------------------------------------
