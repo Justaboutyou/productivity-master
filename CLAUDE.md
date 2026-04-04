@@ -75,8 +75,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 │   ├── gcal-reader/
 │   │   ├── SKILL.md
 │   │   └── scripts/
-│   │       ├── fetch_gcal_events.py                 # Step 1b: Google Calendar 오늘 일정
-│   │       └── gcal_auth.py                         # 최초 1회 OAuth2 토큰 생성 (로컬 실행)
+│   │       └── fetch_gcal_events.py                 # Step 1b: Google Calendar 오늘 일정
 │   ├── notion-writer/
 │   │   ├── SKILL.md
 │   │   └── scripts/
@@ -96,9 +95,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 │   ├── briefing_draft.md        # Step 3 산출물 (모닝 브리핑)
 │   ├── night_draft.md           # Step N4 산출물 (나이트 결산)
 │   └── run_log.json             # 실행 이력 (append-only, mode 필드 포함)
-├── docs/
-│   └── plans/                                       # 구현 계획 문서 (이력 보관용)
-├── .env.example                                     # 환경 변수 템플릿
 └── .github/workflows/daily_agent.yml
 ```
 
@@ -114,7 +110,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Step 1b — Google Calendar 오늘 일정 수집 | Python 스크립트 | `gcal-reader`     |
 | Step 2 — 2소스 병합                      | Python 스크립트 | (inline in main.py) |
 | Step 3 — 규칙 기반 브리핑 포맷 빌드      | Python 스크립트 | (inline in main.py) |
-| Step 4 — LLM 비서 제안 생성 (★은 코드 레벨)     | LLM (Gemini)    | (inline in main.py) |
+| Step 4 — LLM ★ 판단 + 한 줄 코멘트 생성 | LLM (Gemini)    | (inline in main.py) |
 | Step 5 — Notion Morning 섹션 채우기      | Python 스크립트 | `notion-writer`   |
 | Step 6 — Discord 모닝 브리핑 발송        | Python 스크립트 | `discord-sender`  |
 
@@ -161,14 +157,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | **Todoist 태스크**    | 오늘 due date가 설정된 Todoist 항목. priority 1~4 포함                                       |
 | **GCal 일정**         | 오늘 날짜의 Google Calendar 이벤트. 시작·종료 시간 및 제목 포함                             |
 | **브리핑 메시지**     | LLM이 2소스를 통합해 생성한 Discord 메시지 (2단 구조, Discord markdown, ≤500자)             |
-| **★ 태스크**         | priority=1 태스크에 코드 레벨에서 무조건 부여. p2 이하에는 ★ 없음                            |
+| **★ 태스크**         | LLM이 오늘 집중해야 할 태스크에 부여하는 표시. p1 무조건, 오늘 due p2도 해당                 |
 | **Morning 섹션**      | Notion 일지 페이지의 Top Priorities 3 + Brain Dump 영역 — LLM이 자동 채움                   |
 | **Night 섹션**        | Notion 일지 페이지의 성찰과 감사 영역 — 사람이 직접 작성, 시스템이 절대 건드리지 않음       |
 | **AI 저녁 제언 섹션** | Notion 일지 페이지의 Night 헤딩 직전에 자동 삽입 — 완료 요약 + 미완료 제언 + 장기 지연 제언 |
 
 ### 모닝 브리핑 포맷 원칙
 
-Python 규칙 기반으로 섹션을 빌드하고, LLM은 `🤖 오늘의 제안` 섹션만 담당한다. ★ 부여는 코드 레벨에서 처리한다:
+Python 규칙 기반으로 섹션을 빌드하고, LLM은 ★ 판단 + 한 줄 코멘트만 담당한다:
 
 ```
 ──────────────────────────
@@ -178,11 +174,11 @@ Python 규칙 기반으로 섹션을 빌드하고, LLM은 `🤖 오늘의 제안
 💼 일정 (업무)          ← 평일만, GCal 업무 이벤트 (colorId=4 또는 업무 키워드/시간대)
   HH:MM~HH:MM  이벤트명
 
-🌙 일정 (개인)          ← GCal 개인 이벤트 (평일만 분리; 주말은 🌙 일정 하나로 통합)
+🌙 일정 (개인)          ← GCal 개인 이벤트
   HH:MM~HH:MM  이벤트명
 
 💼 업무                 ← root_project = 業務リスト
-  태스크명  ★           ← p1만 코드 레벨 보장 (p2 이하 ★ 없음)
+  태스크명  ★           ← p1은 코드 보장, 오늘 due p2는 LLM 판단
 
 📚 자기계발             ← root_project = 자기계발
   태스크명
@@ -191,18 +187,14 @@ Python 규칙 기반으로 섹션을 빌드하고, LLM은 `🤖 오늘의 제안
   태스크A · 태스크B
 
 ──────────────────────────
-🤖 오늘의 제안
-  ▶ 지금 당장: {top_task}     ← LLM이 선택한 집중 태스크 1개
-  💡 {schedule_tip}            ← 일정 기반 시간 활용 제안 (30자 이내)
+"LLM 한 줄 코멘트 (30자 이내, 이모지 1개)"
 ──────────────────────────
 ```
-
-**LLM 프롬프트**: `main.py` 상단 `MORNING_ADVICE_PROMPT` 상수로 관리 — 직접 편집 가능
 
 **★ 판단 기준**:
 
 - p1은 **코드 레벨**에서 무조건 ★ 보장 (LLM 실패 시에도 반드시 부여)
-- p2 이하는 ★ 없음
+- p2 이하는 ★ 없음 — LLM 판단 제거
 
 ### 나이트 결산 포맷 원칙
 
@@ -211,19 +203,34 @@ Python 규칙 기반으로 섹션을 빌드하고, LLM은 `🤖 오늘의 제안
 결산 · MM/DD 요일
 ──────────────────────────
 
-📊 완료 / 계획 (완료율%)
-   완료: 태스크A, 태스크B 외 N건
+📅 오늘 보낸 시간        ← GCal 이벤트 (있을 때만)
+  HH:MM~HH:MM  이벤트명
 
-⏳ 내일 이어서           ← 오늘 미완료 태스크 + LLM 제언
-  • 태스크명 → 제언 (15자 이내)
+💼 업무 (완료 / 계획)    ← root_project = 業務リスト
+  ✓ 완료 태스크명
+  (없음)
 
-🗂️ 오래 미뤄온 것 (7일+) ← due_date 7일 이상 경과 + LLM 제언
+📚 자기계발 (완료 / 계획) ← root_project = 자기계발
+  ✓ 완료 태스크명
+
+📦 백로그 (완료 / 계획)  ← root_project = 간단일 리스트
+  (없음)
+
+🎯 내일 하나만 고른다면  ← LLM이 미완료 중 1개 픽 (없으면 생략)
+  • 태스크명 — 이유 (30자 이내)
+
+🗂️ 오래 미뤄온 것 (7일+) ← due_date 7일 이상 경과 + LLM 제언 (있을 때만)
   • 태스크명 (N일째) → 제언
 
 ──────────────────────────
-"LLM 한 줄 코멘트 (20자 이내, 이모지 1개)"
+"오늘 완료/GCal에서 발견한 구체적인 것 한 줄 (30자 이내, 이모지 1개)"
 ──────────────────────────
 ```
+
+**나이트 LLM 규칙**:
+- `focus_task`: 미완료 중 내일 딱 하나. "태스크명 — 이유" 형태. 미완료 없으면 빈 문자열
+- `delayed_advice`: 7일+ 항목별 삭제/재지정/쪼개기 중 하나 (15자 이내)
+- `comment`: 완료 태스크나 GCal 일정에서 구체적인 것 발견. "수고했어" 같은 기계적 멘트 금지
 
 ### Notion Write 원칙
 
@@ -244,8 +251,7 @@ Python 규칙 기반으로 섹션을 빌드하고, LLM은 `🤖 오늘의 제안
 | Todoist API 실패    | skip + 로그 기록, GCal만으로 계속 진행                                     |
 | GCal API 실패       | skip + 로그 기록, Todoist만으로 계속 진행                                  |
 | 2소스 모두 비어있음 | 빈 브리핑 메시지 Discord 발송                                              |
-| LLM 실패            | 빈 코멘트 fallback — 재시도 없음, 포맷 빌드는 정상 진행                  |
-| 나이트 아침 캐시 없음 | Todoist 재수집(Step 1a) 후 폴백, 그마저 실패 시 빈 결산 발송           |
+| LLM 검증 실패       | Step 3 재시도 최대 2회 → 초과 시 `merged_context.json` 원문 그대로 발송 |
 | Notion Write 실패   | skip + 로그, Discord 발송은 계속 진행                                      |
 | Discord 발송 실패   | 자동 재시도 2회 → 실패 시 에러 로그 + 에스컬레이션                        |
 
@@ -279,7 +285,7 @@ Python 규칙 기반으로 섹션을 빌드하고, LLM은 `🤖 오늘의 제안
 {
   "date": "YYYY-MM-DD",
   "events": [
-    { "title": "이벤트 제목", "start": "10:00", "end": "11:00", "colorId": "4" }
+    { "title": "이벤트 제목", "start": "10:00", "end": "11:00" }
   ]
 }
 ```
@@ -413,7 +419,7 @@ export DISCORD_WEBHOOK_URL=...
 | GCal 인증 방식              | OAuth2 —`GCAL_CLIENT_ID` + `GCAL_CLIENT_SECRET` + `GCAL_TOKEN_JSON` (token.json base64)                                                                      |
 | GCal 수집 범위              | 오늘 00:00~23:59 JST 이벤트 전체                                                                                                                                    |
 | LLM                         | Gemini `gemini-2.0-flash` (`google-genai` SDK) — Free tier (1,500회/일 무료)                                                                                   |
-| 브리핑 메시지 구조          | 규칙 기반 (💼 업무 / 📚 자기계발 / 📦 백로그) + p1 ★ 코드 보장 + 🤖 오늘의 제안 (LLM: top_task + schedule_tip)                                                      |
+| 브리핑 메시지 구조          | 규칙 기반 (💼 업무 / 📚 자기계발 / 📦 백로그) + p1 ★ 코드 보장 + 한 줄 코멘트 (LLM)                                                                                |
 | 빈 상태 처리                | 2소스 모두 비어있어도 빈 브리핑 메시지 Discord 발송                                                                                                                 |
 | 소스 부분 실패 처리         | 개별 소스 실패는 skip 처리, 나머지 소스로 브리핑 생성                                                                                                               |
 | 발송 채널                   | Discord Incoming Webhook (`DISCORD_WEBHOOK_URL`) — 개인 서버                                                                                                     |
@@ -423,6 +429,5 @@ export DISCORD_WEBHOOK_URL=...
 | 완료 태스크 수집            | 별도 API 불필요 — 아침 todoist_raw.json과 현재 active 태스크 ID 비교로 역산                                                                                        |
 | 장기 지연 기준              | due_date가 오늘 기준 7일 이상 경과한 태스크 (`LONG_DELAY_THRESHOLD_DAYS = 7`)                                                                                     |
 | pip 캐시                    | `actions/cache@v4` — requirements.txt 해시 기반, 반복 실행 시 설치 시간 단축                                                                                     |
-| 모닝 컨텍스트 캐시          | `merged_context.json` + `todoist_raw.json` 을 JST 날짜 키로 저장, 나이트 모드에서 restore — GCal/Todoist API 재호출 없음 |
 | 저장소 이름                 | `productivity-master` (GitHub: Justaboutyou/productivity-master)                                                                                                  |
 | GCal 이벤트 분류            | colorId=4 (Flamingo) → 업무, 나머지 → 키워드 → 시간대(9~18시) 순으로 판단                                                                                        |
