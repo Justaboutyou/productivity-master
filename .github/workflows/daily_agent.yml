@@ -71,7 +71,7 @@ jobs:
               sys.exit(1)
           try:
               client = genai.Client(api_key=key)
-              resp = client.models.generate_content(model="gemini-2.5-flash-preview-04-17", contents="ping")
+              resp = client.models.generate_content(model="gemini-2.5-flash", contents="ping")
               print(f"Gemini API OK: {repr(resp.text[:30])}")
           except Exception as e:
               print(f"ERROR: {type(e).__name__}: {e}", file=sys.stderr)
